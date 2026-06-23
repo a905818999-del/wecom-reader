@@ -169,7 +169,7 @@ def search_messages(
                 continue
 
             query = (
-                f'SELECT message_id, server_id, sender_id, conversation_id, '
+                f'SELECT message_id, server_id, sequence, sender_id, conversation_id, '
                 f'content_type, send_time, flag, content '
                 f'FROM "{table}" WHERE content LIKE ?'
             )
@@ -187,6 +187,7 @@ def search_messages(
                 messages.append({
                     "message_id": row["message_id"],
                     "server_id": row["server_id"],
+                    "sequence": row["sequence"],
                     "sender_id": row["sender_id"],
                     "conversation_id": row["conversation_id"],
                     "content_type": ct,

@@ -1,12 +1,11 @@
 """Main WeComReader class — unified interface for WeCom chat data access."""
 
-import json
 import os
 import shutil
 import sqlite3
 from typing import Optional
 
-from .crypto.decrypt import decrypt_database, is_plain_sqlite, is_wxsqlite3_aes128_page1
+from .crypto.decrypt import decrypt_database, is_plain_sqlite, is_wxsqlite3_aes128_page1, verify_key
 from .crypto.key_extract import extract_key
 from .db.contact import build_user_map, get_group_members, list_contacts
 from .db.message import get_message_count, get_messages, search_messages
@@ -150,7 +149,6 @@ class WeComReader:
                     for k, v in self._key_map.items():
                         if k.startswith("_"):
                             continue
-                        from .crypto.decrypt import verify_key
                         if verify_key(bytes.fromhex(v), page1):
                             key_hex = v
                             break
