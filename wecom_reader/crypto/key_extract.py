@@ -7,10 +7,9 @@ Two scanning strategies:
 Requires: Windows, admin privileges, WXWork.exe running.
 """
 
+import bisect
 import ctypes
 import ctypes.wintypes as wt
-import hashlib
-import hmac as hmac_mod
 import os
 import re
 import struct
@@ -325,7 +324,6 @@ def extract_key(
 
 
 def _read_u32(memory_regions, starts, addr):
-    import bisect
     idx = bisect.bisect_right(starts, addr) - 1
     if idx < 0:
         return None
@@ -336,7 +334,6 @@ def _read_u32(memory_regions, starts, addr):
 
 
 def _valid_ptr(memory_regions, starts, addr, length=4):
-    import bisect
     idx = bisect.bisect_right(starts, addr) - 1
     if idx < 0:
         return False
