@@ -56,15 +56,24 @@ class WeComReader:
         return self._decrypted_dir
 
     def status(self) -> dict:
-        """Check current status of decrypted data."""
+        """Check current status of decrypted data.
+
+        Returns:
+            Dict with db_dir, decrypted_dir, decrypted, databases, and WAL
+            info (wal_present, wal_warning) so callers can detect uncheckpointed
+            transactions we cannot read yet.
+        """
         result = {
             "db_dir": self._db_dir,
             "decrypted_dir": self._decrypted_dir,
             "decrypted": os.path.isdir(self._decrypted_dir),
             "databases": {},
+            "wal_present": [],
+            "wal_warning": None,
         }
 
         if os.path.isdir(self._decrypted_dir):
+            wal_present: list[str] = []
             for name in os.listdir(self._decrypted_dir):
                 path = os.path.join(self._decrypted_dir, name)
                 if name.endswith(".db") and os.path.isfile(path):
@@ -84,6 +93,21 @@ class WeComReader:
                         "size_mb": round(sz / 1024 / 1024, 1),
                         "tables": tables,
                     }
+
+                    # Track WAL presence: if a sibling .db-wal exists with
+                    # non-zero size, the db has uncheckpointed transactions
+                    # we can't read yet (WAL merge support is incomplete).
+                    wal_sibling = path + "-wal"
+                    if os.path.isfile(wal_sibling) and os.path.getsize(wal_sibling) > 0:
+                        wal_present.append(name)
+
+            result["wal_present"] = wal_present
+            result["wal_warning"] = (
+                "WAL files detected but not merged — recent messages may be missing. "
+                "See db/message.py / crypto/decrypt.py for details."
+                if wal_present
+                else None
+            )
 
         return result
 
@@ -163,12 +187,30 @@ class WeComReader:
                 except Exception:
                     failed += 1
 
+        # Detect uncheckpointed WAL files (WAL merge support is incomplete).
+        wal_present: list[str] = []
+        for root, _dirs, files in os.walk(self._db_dir):
+            for name in files:
+                if name.endswith("-wal"):
+                    sibling = os.path.join(root, name[:-4])  # strip "-wal"
+                    if os.path.isfile(sibling) and os.path.getsize(
+                        os.path.join(root, name)
+                    ) > 0:
+                        wal_present.append(os.path.relpath(sibling, self._db_dir))
+
         return {
             "success": success > 0,
             "decrypted": success,
             "copied": copied,
             "failed": failed,
             "decrypted_dir": self._decrypted_dir,
+            "wal_present": wal_present,
+            "wal_warning": (
+                "WAL files detected but not merged — recent messages may be missing. "
+                "See db/message.py / crypto/decrypt.py for details."
+                if wal_present
+                else None
+            ),
         }
 
     def _get_db_path(self, name: str) -> Optional[str]:

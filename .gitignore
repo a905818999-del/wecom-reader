@@ -29,3 +29,14 @@ config.json
 *.db
 *.db-wal
 *.db-shm
+
+# Test / debug artifacts
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.tox/
+.mypy_cache/
+.ruff_cache/
+api_at_*.txt
+parse_output.txt
