@@ -10,6 +10,7 @@ Encryption parameters (from wechat-decrypt wxwork_crypto.py):
 import hashlib
 import os
 import struct
+from typing import Optional
 
 from Cryptodome.Cipher import AES
 
@@ -132,3 +133,55 @@ def decrypt_database(db_path: str, out_path: str, raw_key: bytes) -> None:
             if len(page) < PAGE_SZ:
                 page += b"\x00" * (PAGE_SZ - len(page))
             fout.write(decrypt_page(raw_key, page, page_no))
+
+
+def decrypt_wal_pages(raw_key: bytes, wal_data: bytes) -> list[tuple[int, bytes]]:
+    """Decrypt pages from a wxSQLite3 AES-128 WAL file.
+
+    NOTE (2026-06-26): The page_no encoding for WeCom WAL has not yet been
+    fully validated. Inspection of E:\\WXWork\\...\\message.db-wal shows the
+    file is NOT a standard SQLite WAL (first 4 bytes are 0x377f0682, not
+    "SQLite WAL\\n"), and decrypting frames with the same key as the main
+    db produces garbage. The page_no byte-order/offset hypotheses below
+    are best-effort and disabled by default.
+
+    The 24-byte frame-header layout follows the SQLite WAL spec:
+        offset 0..4   : page_no (big-endian, 4 bytes)
+        offset 4..8   : db_size after commit (big-endian, 4 bytes)
+        offset 8..24  : checksum + salts (16 bytes)
+        offset 24..   : PAGE_SZ bytes of encrypted page data
+    """
+    import struct
+
+    out: list[tuple[int, bytes]] = []
+    FRAME_HDR = 24
+
+    if len(wal_data) < FRAME_HDR + PAGE_SZ:
+        return out
+
+    i = 0
+    while i + FRAME_HDR + PAGE_SZ <= len(wal_data):
+        # Try the SQLite-spec layout: page_no big-endian at frame-header offset 0.
+        page_no = struct.unpack_from(">I", wal_data, i)[0]
+        encrypted = wal_data[i + FRAME_HDR : i + FRAME_HDR + PAGE_SZ]
+        try:
+            decrypted = decrypt_page(raw_key, encrypted, page_no)
+        except Exception:
+            i += FRAME_HDR + PAGE_SZ
+            continue
+        if page_no >= 1 and decrypted[:16] == SQLITE_HDR:
+            out.append((page_no, decrypted))
+        i += FRAME_HDR + PAGE_SZ
+
+    return out
+
+
+def decrypt_wal_file(wal_path: str, raw_key: bytes) -> list[tuple[int, bytes]]:
+    """Read WAL file from disk and decrypt all valid pages.
+
+    Returns only frames that decrypt to a valid SQLite page header — this
+    guards against silent corruption from misaligned frame offsets.
+    """
+    with open(wal_path, "rb") as f:
+        data = f.read()
+    return decrypt_wal_pages(raw_key, data)

@@ -5,11 +5,17 @@ import shutil
 import sqlite3
 from typing import Optional
 
-from .crypto.decrypt import decrypt_database, is_plain_sqlite, is_wxsqlite3_aes128_page1, verify_key
+from .crypto.decrypt import (
+    decrypt_database,
+    is_plain_sqlite,
+    is_wxsqlite3_aes128_page1,
+    verify_key,
+)
 from .crypto.key_extract import extract_key
 from .db.contact import build_user_map, get_group_members, list_contacts
 from .db.message import get_message_count, get_messages, search_messages
 from .db.session import get_session_count, list_sessions
+from .image_resolver import ImageResolver
 
 
 class WeComReader:
@@ -46,6 +52,7 @@ class WeComReader:
         self._decrypted_dir = decrypted_dir or os.path.join(os.getcwd(), "wxwork_decrypted")
         self._key_map = key_map
         self._user_map: Optional[dict] = None
+        self._image_resolver: Optional[ImageResolver] = None
 
     @property
     def db_dir(self) -> Optional[str]:
@@ -118,6 +125,7 @@ class WeComReader:
         success = 0
         copied = 0
         failed = 0
+        wal_present: list[str] = []  # names of dbs that have an unread WAL
 
         for root, dirs, files in os.walk(self._db_dir):
             dirs[:] = [d for d in dirs if d not in ("-journal",)]
@@ -127,6 +135,13 @@ class WeComReader:
                 path = os.path.join(root, name)
                 rel = os.path.relpath(path, self._db_dir)
                 out_path = os.path.join(self._decrypted_dir, rel)
+
+                # Track WAL presence: if a sibling .db-wal exists with non-zero
+                # size, the db has uncheckpointed transactions we can't read
+                # yet (WAL merge support is incomplete — see TODO 2026-06-26).
+                wal_sibling = os.path.join(root, name + "-wal")
+                if os.path.isfile(wal_sibling) and os.path.getsize(wal_sibling) > 0:
+                    wal_present.append(rel)
 
                 with open(path, "rb") as f:
                     page1 = f.read(4096)
@@ -168,6 +183,12 @@ class WeComReader:
             "decrypted": success,
             "copied": copied,
             "failed": failed,
+            "wal_present": wal_present,
+            "wal_warning": (
+                "WAL files detected but not merged — recent messages may be missing. "
+                "See db/message.py / crypto/decrypt.py for details."
+                if wal_present else None
+            ),
             "decrypted_dir": self._decrypted_dir,
         }
 
@@ -219,11 +240,26 @@ class WeComReader:
             msg_db, conversation_id, limit=limit, offset=offset, since=since, until=until
         )
 
-        # Enrich with sender names
+        # Enrich with sender names and image paths
+        resolver = self.image_resolver
         for msg in messages:
             sender_id = msg.get("sender_id")
             if sender_id and isinstance(sender_id, int) and sender_id in self._user_map:
                 msg["sender_name"] = self._user_map[sender_id]
+
+            # Resolve image messages (content_type=4, 14, 15, 123, 653) to local file paths
+            if msg.get("content_type") in (4, 14, 15, 123, 653) and resolver:
+                # First try resolve_message_all (handles multi-image messages)
+                all_infos = resolver.resolve_message_all(msg["message_id"])
+                if all_infos:
+                    msg["image_paths"] = [i.local_path for i in all_infos if i.local_path]
+                    msg["image_path"] = msg["image_paths"][0]
+                    msg["image_file_name"] = all_infos[0].file_name
+                else:
+                    info = resolver.resolve_message(msg["message_id"])
+                    if info.found and info.local_path:
+                        msg["image_path"] = info.local_path
+                        msg["image_file_name"] = info.file_name
 
         return messages
 
@@ -280,3 +316,62 @@ class WeComReader:
         if not msg_db:
             return 0
         return get_message_count(msg_db, conversation_id)
+
+    @property
+    def image_resolver(self) -> Optional[ImageResolver]:
+        """Get the image resolver instance (lazy-initialized)."""
+        if self._image_resolver is None and self._db_dir:
+            self._image_resolver = ImageResolver(
+                db_dir=self._db_dir,
+                decrypted_dir=self._decrypted_dir,
+            )
+        return self._image_resolver
+
+    def resolve_image(self, message_id: int) -> dict:
+        """Resolve a single image message to its local file path.
+
+        Args:
+            message_id: The message_id from message_table (content_type=4).
+
+        Returns:
+            Dict with image resolution info.
+        """
+        resolver = self.image_resolver
+        if not resolver:
+            return {"found": False, "error": "No db_dir configured"}
+        info = resolver.resolve_message(message_id)
+        return {
+            "message_id": info.message_id,
+            "url": info.url,
+            "local_path": info.local_path,
+            "file_name": info.file_name,
+            "found": info.found,
+        }
+
+    def export_images(
+        self,
+        conversation_id: str,
+        output_dir: str,
+        limit: int = 10000,
+    ) -> dict:
+        """Export all images from a conversation.
+
+        Args:
+            conversation_id: Conversation ID (e.g. R:12345).
+            output_dir: Directory to copy images to.
+            limit: Max messages to process.
+
+        Returns:
+            Dict with export statistics.
+        """
+        resolver = self.image_resolver
+        if not resolver:
+            return {"found": False, "error": "No db_dir configured"}
+        return resolver.export_conversation(conversation_id, output_dir, limit=limit)
+
+    def image_stats(self) -> dict:
+        """Get statistics about image cache and mapping."""
+        resolver = self.image_resolver
+        if not resolver:
+            return {"error": "No db_dir configured"}
+        return resolver.stats()
