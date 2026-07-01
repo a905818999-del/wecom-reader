@@ -4,13 +4,14 @@ Usage: python -m wecom_reader.web --db-dir E:/WXWork/1688851235369380/Data
 """
 
 import json
+import mimetypes
 import os
 import sqlite3
 import sys
 import time
 from datetime import datetime
 
-from flask import Flask, Response, render_template_string, request
+from flask import Flask, Response, render_template_string, request, send_file
 
 from .reader import WeComReader
 
@@ -23,6 +24,11 @@ def safe_jsonify(data):
 
     def _default(obj):
         if isinstance(obj, bytes):
+            # Try GBK first (common for Chinese Windows apps), then UTF-8
+            try:
+                return obj.decode("gbk", errors="strict")
+            except (UnicodeDecodeError, ValueError):
+                pass
             try:
                 return obj.decode("utf-8", errors="replace")
             except Exception:
@@ -86,6 +92,12 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC"
 .msg-type-tag.voice { background: #fa8c16; }
 .msg-type-tag.file { background: #13c2c2; }
 .msg-type-tag.system { background: #999; }
+
+/* Image messages */
+.msg-image { max-width: 300px; max-height: 400px; border-radius: 6px; cursor: pointer; transition: opacity 0.15s; }
+.msg-image:hover { opacity: 0.85; }
+.msg-image-container { padding: 4px; }
+.msg-image-placeholder { color: #bbb; font-size: 13px; font-style: italic; }
 
 /* Empty state */
 .empty-state { display: flex; align-items: center; justify-content: center; height: 100%; color: #999; font-size: 15px; }
@@ -186,11 +198,46 @@ async function loadMessages(sessionId, reset=false) {
     const sender = m.sender_name || (m.sender_id != null ? String(m.sender_id) : '');
     const content = m.content || '';
     const tname = m.type_name || '';
+    const ct = m.content_type;
     const typeClass = {image:'image',voice:'voice','image/file':'file',status:'system',meeting:'system',call:'system',app_message:'file'}[tname]||'';
     const tag = tname && tname!=='text' && !tname.startsWith('type_') ? `<span class="msg-type-tag ${typeClass}">${escapeHtml(tname)}</span>` : '';
+
+    // Image message: render <img> if resolved, otherwise show filename
+    let body;
+    if (ct === 4 || ct === 14 || ct === 15 || ct === 123 || ct === 653) {
+      // Multi-image support: use image_paths[] when present
+      const paths = Array.isArray(m.image_paths) && m.image_paths.length > 0
+        ? m.image_paths
+        : (m.image_path ? [m.image_path] : []);
+      if (paths.length > 0) {
+        body = '<div class="msg-image-container">' + paths.map((p, idx) => {
+          const safe = p.split('\\\\').pop().split('/').pop();
+          return `<img class="msg-image" src="/api/image/${m.message_id}?idx=${idx}" alt="${escapeHtml(safe)}" loading="lazy" style="margin:2px;" />`;
+        }).join('') + '</div>';
+      } else {
+        // Rich-text fallback: try to parse @image#N:filename pattern from raw content
+        const richMatch = content.match(/@image#(\d+):([^\s]+\.(?:png|jpg|jpeg|gif|webp|bmp))/i);
+        if (richMatch) {
+          const imgFileName = richMatch[2];
+          body = `<div class="msg-image-container"><img class="msg-image" src="/api/image-by-name?filename=${encodeURIComponent(imgFileName)}" alt="${escapeHtml(imgFileName)}" loading="lazy" style="margin:2px;" onerror="this.parentElement.innerHTML='🖼️ ${escapeHtml(imgFileName)} (未缓存)';" /></div>`;
+        } else {
+          body = `<div class="msg-image-placeholder">🖼️ ${escapeHtml(content) || '[图片未缓存]'}</div>`;
+        }
+      }
+    } else {
+      // Check for @image#N:filename in non-image message types (rich text fallback)
+      const richMatch = (content || '').match(/@image#(\d+):([^\s]+\.(?:png|jpg|jpeg|gif|webp|bmp))/i);
+      if (richMatch) {
+        const imgFileName = richMatch[2];
+        body = `<div class="msg-image-container"><img class="msg-image" src="/api/image-by-name?filename=${encodeURIComponent(imgFileName)}" alt="${escapeHtml(imgFileName)}" loading="lazy" style="margin:2px;" onerror="this.parentElement.innerHTML='🖼️ ${escapeHtml(imgFileName)} (未缓存)';" /></div>`;
+      } else {
+        body = `${escapeHtml(content) || '<i style="color:#bbb">[空消息]</i>'}`;
+      }
+    }
+
     return `<div class="msg ${isSend?'sent':'received'}">
       ${!isSend && sender ? `<div class="msg-sender">${escapeHtml(sender)}</div>` : ''}
-      <div class="msg-bubble">${escapeHtml(content) || '<i style="color:#bbb">[空消息]</i>'}${tag}</div>
+      <div class="msg-bubble">${body}${tag}</div>
       <div class="msg-time">${formatTime(m.send_time)}</div>
     </div>`;
   }).join('');
@@ -231,6 +278,23 @@ async function refreshData() {
   }
   setTimeout(() => { btn.textContent = '刷新数据'; btn.disabled = false; }, 2000);
 }
+
+// Image lightbox
+const lightbox = document.createElement('div');
+lightbox.id = 'lightbox';
+lightbox.style.cssText = 'display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.85);z-index:9999;cursor:zoom-out;justify-content:center;align-items:center;';
+lightbox.innerHTML = '<img id="lightbox-img" style="max-width:95%;max-height:95%;object-fit:contain;border-radius:4px;" />';
+lightbox.onclick = () => lightbox.style.display = 'none';
+document.body.appendChild(lightbox);
+
+// Override image click to use lightbox
+document.addEventListener('click', function(e) {
+  if (e.target.classList.contains('msg-image')) {
+    e.stopPropagation();
+    document.getElementById('lightbox-img').src = e.target.src;
+    lightbox.style.display = 'flex';
+  }
+});
 
 loadSessions();
 </script>
@@ -280,6 +344,85 @@ def api_refresh():
         return safe_jsonify(result)
     except Exception as e:
         return safe_jsonify({"success": False, "error": str(e)})
+
+
+@app.route("/api/image/<int:message_id>")
+def api_image(message_id):
+    """Serve an image file for a given message_id.
+
+    Resolves the image via ImageResolver and returns the file from Cache/Image/.
+
+    Query params:
+        idx (int): Zero-based image index for multi-image messages.
+    """
+    idx = request.args.get("idx", default=0, type=int)
+    infos = reader.image_resolver.resolve_message_all(message_id) if reader.image_resolver else []
+    if idx < 0 or idx >= len(infos):
+        # Fall back to single-image resolver for backward compatibility
+        info = reader.resolve_image(message_id)
+        if not info.get("found") or not info.get("local_path"):
+            return Response("Image not found", status=404)
+        file_path = info["local_path"]
+    else:
+        file_path = infos[idx].local_path
+
+    if not file_path or not os.path.isfile(file_path):
+        return Response("Image file missing", status=404)
+
+    # Detect MIME type
+    mime, _ = mimetypes.guess_type(file_path)
+    if not mime:
+        mime = "application/octet-stream"
+
+    resp = send_file(file_path, mimetype=mime)
+    # Cache for 1 hour (images are static local files)
+    resp.headers["Cache-Control"] = "public, max-age=3600"
+    return resp
+
+
+@app.route("/api/image-by-name")
+def api_image_by_name():
+    """Serve an image by filename (for @image#N:filename rich-text format).
+
+    Searches both Cache/Image/ and Cache/File/ directories for a matching file.
+
+    Query params:
+        filename (str): URL-encoded filename to look up.
+    """
+    filename = request.args.get("filename", "")
+    if not filename:
+        return Response("filename required", status=400)
+
+    resolver = reader.image_resolver
+    if not resolver:
+        return Response("Resolver not initialized", status=500)
+
+    # Try CacheMapping first (most accurate)
+    result = resolver._resolve_by_file_name(filename)
+    if result:
+        _, file_path, _ = result
+        if file_path and os.path.isfile(file_path):
+            mime, _ = mimetypes.guess_type(file_path)
+            if not mime:
+                mime = "application/octet-stream"
+            resp = send_file(file_path, mimetype=mime)
+            resp.headers["Cache-Control"] = "public, max-age=3600"
+            return resp
+
+    # Direct scan as fallback
+    index = resolver._build_file_index()
+    # Try full path key first, then filename-only
+    for key in [filename, filename.replace("/", "\\")]:
+        if key in index and os.path.isfile(index[key]):
+            file_path = index[key]
+            mime, _ = mimetypes.guess_type(file_path)
+            if not mime:
+                mime = "application/octet-stream"
+            resp = send_file(file_path, mimetype=mime)
+            resp.headers["Cache-Control"] = "public, max-age=3600"
+            return resp
+
+    return Response(f"File not found: {filename}", status=404)
 
 
 def main():

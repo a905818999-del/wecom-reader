@@ -280,3 +280,52 @@ class WeComReader:
         if not msg_db:
             return 0
         return get_message_count(msg_db, conversation_id)
+
+    # ── Image resolution facade ─────────────────────────────────────
+
+    def _image_resolver(self):
+        """Lazy-construct an ImageResolver over this reader's paths.
+
+        Imported lazily to avoid a circular import
+        (image_resolver → reader for the optional session_id lookup).
+        """
+        from .image_resolver import ImageResolver  # pragma: no cover
+
+        return ImageResolver(self._db_dir, self._decrypted_dir)
+
+    def resolve_image(self, message_id: int) -> dict:
+        """Resolve a single image message to its local cached file.
+
+        Args:
+            message_id: message_table.id for a content_type=4 row.
+
+        Returns:
+            Dict mirroring ImageInfo fields.
+        """
+        info = self._image_resolver().resolve_message(message_id)
+        return {
+            "message_id": info.message_id,
+            "url": info.url,
+            "local_path": info.local_path,
+            "file_name": info.file_name,
+            "file_md5": info.file_md5,
+            "file_index": info.file_index,
+            "found": info.found,
+        }
+
+    def export_images(self, session_id: str, output: str, limit: int = 10000) -> dict:
+        """Export all images from a conversation to a directory.
+
+        Args:
+            session_id: Conversation ID (e.g. R:12345, S:1_2).
+            output: Output directory; created if missing.
+            limit: Max messages to scan.
+
+        Returns:
+            Dict with `count` and per-image list.
+        """
+        return self._image_resolver().export_conversation(session_id, output, limit=limit)
+
+    def image_stats(self) -> dict:
+        """Show image cache and mapping statistics."""
+        return self._image_resolver().stats()

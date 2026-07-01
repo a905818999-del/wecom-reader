@@ -157,5 +157,52 @@ def export(ctx, session_id, fmt, output):
         click.echo(data)
 
 
+# ── Image subcommands ──────────────────────────────────────────────
+
+
+@main.group()
+@click.pass_context
+def image(ctx):
+    """Image cache operations (resolve, export, stats)."""
+    pass
+
+
+@image.command()
+@click.argument("message_id", type=int)
+@click.pass_context
+def resolve(ctx, message_id):
+    """Resolve a single image message to its local cached file.
+
+    MESSAGE_ID: The message_id from message_table (content_type=4).
+    """
+    reader: WeComReader = ctx.obj["reader"]
+    result = reader.resolve_image(message_id)
+    _json_output(result)
+
+
+@image.command()
+@click.argument("session_id")
+@click.option("--output", "-o", default="./images", help="Output directory")
+@click.option("--limit", "-n", default=10000, help="Max messages to process")
+@click.pass_context
+def export(ctx, session_id, output, limit):
+    """Export all images from a conversation.
+
+    SESSION_ID: Conversation ID (e.g. R:12345, S:1_2).
+    """
+    reader: WeComReader = ctx.obj["reader"]
+    result = reader.export_images(session_id, output, limit=limit)
+    _json_output(result)
+
+
+@image.command()
+@click.pass_context
+def stats(ctx):
+    """Show image cache and mapping statistics."""
+    reader: WeComReader = ctx.obj["reader"]
+    result = reader.image_stats()
+    _json_output(result)
+
+
 if __name__ == "__main__":
     main()
