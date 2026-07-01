@@ -5,11 +5,17 @@ import shutil
 import sqlite3
 from typing import Optional
 
-from .crypto.decrypt import decrypt_database, is_plain_sqlite, is_wxsqlite3_aes128_page1, verify_key
+from .crypto.decrypt import (
+    decrypt_database,
+    is_plain_sqlite,
+    is_wxsqlite3_aes128_page1,
+    verify_key,
+)
 from .crypto.key_extract import extract_key
 from .db.contact import build_user_map, get_group_members, list_contacts
 from .db.message import get_message_count, get_messages, search_messages
 from .db.session import get_session_count, list_sessions
+from .image_resolver import ImageResolver, ResolvedImage
 
 
 class WeComReader:
@@ -43,9 +49,12 @@ class WeComReader:
             key_map: Pre-extracted key map from extract_key(). If None, init() will extract.
         """
         self._db_dir = db_dir
-        self._decrypted_dir = decrypted_dir or os.path.join(os.getcwd(), "wxwork_decrypted")
+        self._decrypted_dir = decrypted_dir or os.path.join(
+            os.getcwd(), "wxwork_decrypted"
+        )
         self._key_map = key_map
         self._user_map: Optional[dict] = None
+        self._image_resolver: Optional[ImageResolver] = None
 
     @property
     def db_dir(self) -> Optional[str]:
@@ -122,7 +131,11 @@ class WeComReader:
         for root, dirs, files in os.walk(self._db_dir):
             dirs[:] = [d for d in dirs if d not in ("-journal",)]
             for name in files:
-                if not name.endswith(".db") or name.endswith("-wal") or name.endswith("-shm"):
+                if (
+                    not name.endswith(".db")
+                    or name.endswith("-wal")
+                    or name.endswith("-shm")
+                ):
                     continue
                 path = os.path.join(root, name)
                 rel = os.path.relpath(path, self._db_dir)
@@ -199,7 +212,13 @@ class WeComReader:
         session_db = self._get_db_path("session.db")
         if not session_db:
             return []
-        return list_sessions(session_db, limit=limit, offset=offset, keyword=keyword, session_type=session_type)
+        return list_sessions(
+            session_db,
+            limit=limit,
+            offset=offset,
+            keyword=keyword,
+            session_type=session_type,
+        )
 
     def get_messages(
         self,
@@ -216,7 +235,12 @@ class WeComReader:
 
         self._ensure_user_map()
         messages = get_messages(
-            msg_db, conversation_id, limit=limit, offset=offset, since=since, until=until
+            msg_db,
+            conversation_id,
+            limit=limit,
+            offset=offset,
+            since=since,
+            until=until,
         )
 
         # Enrich with sender names
@@ -239,7 +263,9 @@ class WeComReader:
             return []
 
         self._ensure_user_map()
-        results = search_messages(msg_db, keyword, conversation_id=conversation_id, limit=limit)
+        results = search_messages(
+            msg_db, keyword, conversation_id=conversation_id, limit=limit
+        )
 
         for msg in results:
             sender_id = msg.get("sender_id")
@@ -280,3 +306,14 @@ class WeComReader:
         if not msg_db:
             return 0
         return get_message_count(msg_db, conversation_id)
+
+    @property
+    def image_resolver(self) -> ImageResolver:
+        """Lazy image resolver for cached local image files."""
+        if self._image_resolver is None:
+            self._image_resolver = ImageResolver(self._db_dir, self._decrypted_dir)
+        return self._image_resolver
+
+    def resolve_image(self, message_id: str) -> Optional[ResolvedImage]:
+        """Resolve an image message to a local cached file."""
+        return self.image_resolver.resolve_image(message_id)
