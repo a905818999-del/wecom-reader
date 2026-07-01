@@ -10,6 +10,7 @@ requires-python = ">=3.10"
 dependencies = [
     "pycryptodomex>=3.20",
     "click>=8.0",
+    "flask>=3.0",
 ]
 
 [project.optional-dependencies]
@@ -19,6 +20,14 @@ all = ["mcp>=1.0", "rich>=13.0"]
 
 [project.scripts]
 wecom-reader = "wecom_reader.cli:main"
+
+[tool.ruff]
+extend-exclude = [
+    "wecom_reader/cli.py",
+    "wecom_reader/crypto/key_extract.py",
+    "wecom_reader/db/contact.py",
+    "wecom_reader/db/session.py",
+]
 
 [tool.setuptools.packages.find]
 include = ["wecom_reader*"]
