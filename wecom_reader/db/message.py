@@ -26,6 +26,8 @@ MSG_TYPES = {
     1011: "meeting",
 }
 
+MENTION_RE = re.compile(r"@[\w\u4e00-\u9fff\u3000-\u303f\uff00-\uffef.-]+")
+
 
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
     row = conn.execute(
@@ -52,9 +54,9 @@ def _parse_content(raw) -> str:
             # Extract runs of Chinese chars, ASCII, and common punctuation
             chunks = re.findall(
                 r"[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef"
-                r"a-zA-Z0-9]"
+                r"a-zA-Z0-9@]"
                 r"[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef"
-                r'a-zA-Z0-9 .,;:!?，。！？、；：\u2018\u2019\u201c\u201d（）【】《》\\-_/\\@#\n\r\t]*',
+                r"a-zA-Z0-9 .,;:!?，。！？、；：\u2018\u2019\u201c\u201d（）【】《》\\-_/\\@#\n\r\t]*",
                 s,
             )
             # Filter out very short chunks (likely noise)
@@ -86,6 +88,18 @@ def _parse_content(raw) -> str:
     return str(raw).strip()
 
 
+def _extract_mentions(content: str) -> list[str]:
+    """Extract @mention tokens from parsed message content."""
+    seen: set[str] = set()
+    mentions: list[str] = []
+    for match in MENTION_RE.findall(content):
+        mention = match.strip()
+        if mention and mention not in seen:
+            seen.add(mention)
+            mentions.append(mention)
+    return mentions
+
+
 def get_messages(
     db_path: str,
     conversation_id: str,
@@ -110,8 +124,8 @@ def get_messages(
 
             # Use explicit column names matching actual schema
             query = (
-                f'SELECT message_id, server_id, sequence, sender_id, conversation_id, '
-                f'content_type, send_time, flag, content, from_app_id '
+                f"SELECT message_id, server_id, sequence, sender_id, conversation_id, "
+                f"content_type, send_time, flag, content, from_app_id "
                 f'FROM "{table}" WHERE conversation_id = ?'
             )
 
@@ -132,6 +146,7 @@ def get_messages(
 
             for row in conn.execute(query, params):
                 ct = row["content_type"]
+                content = _parse_content(row["content"])
                 msg = {
                     "message_id": row["message_id"],
                     "server_id": row["server_id"],
@@ -142,7 +157,8 @@ def get_messages(
                     "type_name": MSG_TYPES.get(ct, f"type_{ct}"),
                     "send_time": row["send_time"],
                     "flag": row["flag"],
-                    "content": _parse_content(row["content"]),
+                    "content": content,
+                    "mentions": _extract_mentions(content),
                     "from_app_id": row["from_app_id"],
                 }
                 messages.append(msg)
@@ -169,8 +185,8 @@ def search_messages(
                 continue
 
             query = (
-                f'SELECT message_id, server_id, sequence, sender_id, conversation_id, '
-                f'content_type, send_time, flag, content '
+                f"SELECT message_id, server_id, sequence, sender_id, conversation_id, "
+                f"content_type, send_time, flag, content "
                 f'FROM "{table}" WHERE content LIKE ?'
             )
             params: list = [f"%{keyword}%"]
@@ -184,18 +200,22 @@ def search_messages(
 
             for row in conn.execute(query, params):
                 ct = row["content_type"]
-                messages.append({
-                    "message_id": row["message_id"],
-                    "server_id": row["server_id"],
-                    "sequence": row["sequence"],
-                    "sender_id": row["sender_id"],
-                    "conversation_id": row["conversation_id"],
-                    "content_type": ct,
-                    "type_name": MSG_TYPES.get(ct, f"type_{ct}"),
-                    "send_time": row["send_time"],
-                    "flag": row["flag"],
-                    "content": _parse_content(row["content"]),
-                })
+                content = _parse_content(row["content"])
+                messages.append(
+                    {
+                        "message_id": row["message_id"],
+                        "server_id": row["server_id"],
+                        "sequence": row["sequence"],
+                        "sender_id": row["sender_id"],
+                        "conversation_id": row["conversation_id"],
+                        "content_type": ct,
+                        "type_name": MSG_TYPES.get(ct, f"type_{ct}"),
+                        "send_time": row["send_time"],
+                        "flag": row["flag"],
+                        "content": content,
+                        "mentions": _extract_mentions(content),
+                    }
+                )
 
         messages.sort(key=lambda m: m.get("sequence", 0), reverse=True)
         return messages[:limit]
