@@ -1,7 +1,7 @@
-"""Minimal CI smoke test for the installable package."""
+"""Minimal CI smoke test for installed distribution metadata."""
+
+from importlib.metadata import version
 
 
-def test_package_imports() -> None:
-    import wecom_reader
-
-    assert wecom_reader.__version__ == "0.1.0"
+def test_distribution_metadata_is_available() -> None:
+    assert version("wecom-reader") == "0.1.0"
