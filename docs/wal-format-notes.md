@@ -281,3 +281,29 @@ Open risk:
 - The current Python decrypt helper on the PR #2 branch likely needs correction
   before it can be trusted.
 - Real-data validation still needs a successful key extraction run.
+
+## T1 implementation validation
+
+Date: 2026-07-24
+
+The production implementation now lives in `wecom_reader/wal.py` and is wired
+into `WeComReader.init()` without changing the public method signature.
+
+Validation completed:
+
+- Synthetic WAL tests cover both checksum byte orders, multiple commits,
+  uncommitted tails, salt reset, checksum damage, repeated pages, commit-driven
+  database truncation, page decoding, quick-check failure, and preservation of
+  an existing output.
+- WAL scanning is streaming. It retains frame metadata and payload offsets, not
+  all page payloads in memory.
+- A read-only live `message.db` snapshot successfully matched a process-memory
+  key, scanned 53 valid frames, identified frame 53 as the last valid commit,
+  decrypted and replayed the committed pages, and passed
+  `PRAGMA quick_check == "ok"`.
+- The live file contained stale frames with a different salt after the valid
+  commit. The reader therefore published only through the valid commit, marked
+  the result degraded, and reported that checkpoint advancement was blocked.
+
+No key material, database bytes, message contents, or recovered files were
+persisted by the validation command.

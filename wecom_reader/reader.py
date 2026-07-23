@@ -3,13 +3,79 @@
 import os
 import shutil
 import sqlite3
+import tempfile
 from typing import Optional
 
-from .crypto.decrypt import decrypt_database, is_plain_sqlite, is_wxsqlite3_aes128_page1, verify_key
+from .crypto.decrypt import (
+    decrypt_database,
+    decrypt_page,
+    is_plain_sqlite,
+    is_wxsqlite3_aes128_page1,
+    verify_key,
+)
 from .crypto.key_extract import extract_key
 from .db.contact import build_user_map, get_group_members, list_contacts
 from .db.message import get_message_count, get_messages, search_messages
 from .db.session import get_session_count, list_sessions
+from .wal import recover_wal
+
+
+def _wal_fingerprint(path: str) -> tuple[int, int, bytes] | None:
+    """Return enough WAL metadata to detect a reset or concurrent write."""
+    try:
+        stat = os.stat(path)
+        with open(path, "rb") as wal_file:
+            header = wal_file.read(32)
+    except FileNotFoundError:
+        return None
+    return stat.st_size, stat.st_mtime_ns, header
+
+
+def _copy_database_snapshot(db_path: str, snapshot_dir: str) -> tuple[str, str | None]:
+    """Copy a stable main/WAL pair without opening the live database."""
+    db_copy = os.path.join(snapshot_dir, os.path.basename(db_path))
+    wal_path = f"{db_path}-wal"
+    wal_copy = f"{db_copy}-wal"
+
+    for _attempt in range(3):
+        wal_before = _wal_fingerprint(wal_path)
+        try:
+            shutil.copy2(db_path, db_copy)
+            if wal_before is not None:
+                shutil.copy2(wal_path, wal_copy)
+            elif os.path.exists(wal_copy):
+                os.remove(wal_copy)
+        except OSError:
+            for partial_path in (db_copy, wal_copy):
+                if os.path.exists(partial_path):
+                    os.remove(partial_path)
+            continue
+        wal_after = _wal_fingerprint(wal_path)
+        if wal_before == wal_after:
+            return db_copy, wal_copy if wal_before is not None else None
+
+    raise RuntimeError("database WAL changed while the read-only snapshot was copied")
+
+
+def _sqlite_quick_check(path: str) -> str:
+    """Run SQLite's lightweight structural verification on a candidate snapshot."""
+    try:
+        connection = sqlite3.connect(path)
+        try:
+            row = connection.execute("PRAGMA quick_check").fetchone()
+        finally:
+            connection.close()
+    except sqlite3.DatabaseError as exc:
+        return str(exc)
+    return row[0] if row else "missing quick_check result"
+
+
+def _publish_without_wal(candidate_path: str, out_path: str) -> None:
+    """Publish a verified candidate without exposing a partially written file."""
+    check = _sqlite_quick_check(candidate_path)
+    if check != "ok":
+        raise RuntimeError(f"SQLite quick_check failed: {check}")
+    os.replace(candidate_path, out_path)
 
 
 class WeComReader:
@@ -43,7 +109,9 @@ class WeComReader:
             key_map: Pre-extracted key map from extract_key(). If None, init() will extract.
         """
         self._db_dir = db_dir
-        self._decrypted_dir = decrypted_dir or os.path.join(os.getcwd(), "wxwork_decrypted")
+        self._decrypted_dir = decrypted_dir or os.path.join(
+            os.getcwd(), "wxwork_decrypted"
+        )
         self._key_map = key_map
         self._user_map: Optional[dict] = None
 
@@ -118,57 +186,155 @@ class WeComReader:
         success = 0
         copied = 0
         failed = 0
+        wal_present: list[str] = []
+        wal_recovered: list[str] = []
+        wal_degraded: list[str] = []
+        wal_failed: list[str] = []
+        wal_retained_snapshot: list[str] = []
+        wal_warnings: list[str] = []
 
         for root, dirs, files in os.walk(self._db_dir):
             dirs[:] = [d for d in dirs if d not in ("-journal",)]
             for name in files:
-                if not name.endswith(".db") or name.endswith("-wal") or name.endswith("-shm"):
+                if (
+                    not name.endswith(".db")
+                    or name.endswith("-wal")
+                    or name.endswith("-shm")
+                ):
                     continue
                 path = os.path.join(root, name)
                 rel = os.path.relpath(path, self._db_dir)
                 out_path = os.path.join(self._decrypted_dir, rel)
 
-                with open(path, "rb") as f:
-                    page1 = f.read(4096)
-
-                if is_plain_sqlite(page1):
-                    os.makedirs(os.path.dirname(out_path), exist_ok=True)
-                    shutil.copy2(path, out_path)
-                    copied += 1
-                    continue
-
-                if not is_wxsqlite3_aes128_page1(page1):
-                    failed += 1
-                    continue
-
-                # Find key for this DB
-                salt_hex = page1[:16].hex()
-                key_hex = self._key_map.get(salt_hex)
-                if not key_hex:
-                    # Try all keys
-                    for k, v in self._key_map.items():
-                        if k.startswith("_"):
-                            continue
-                        if verify_key(bytes.fromhex(v), page1):
-                            key_hex = v
-                            break
-
-                if not key_hex:
-                    failed += 1
-                    continue
-
+                out_dir = os.path.dirname(out_path)
+                os.makedirs(out_dir, exist_ok=True)
+                candidate_fd, candidate_path = tempfile.mkstemp(
+                    prefix=f".{name}.", suffix=".candidate", dir=out_dir
+                )
+                os.close(candidate_fd)
+                published = False
+                was_encrypted = False
                 try:
-                    decrypt_database(path, out_path, bytes.fromhex(key_hex))
-                    success += 1
-                except Exception:
+                    with tempfile.TemporaryDirectory(
+                        prefix="wecom-reader-snapshot-"
+                    ) as snapshot_dir:
+                        db_snapshot, wal_snapshot = _copy_database_snapshot(
+                            path, snapshot_dir
+                        )
+                        with open(db_snapshot, "rb") as db_file:
+                            page1 = db_file.read(4096)
+
+                        raw_key: bytes | None = None
+                        if is_plain_sqlite(page1):
+                            shutil.copy2(db_snapshot, candidate_path)
+                            was_encrypted = False
+                        elif is_wxsqlite3_aes128_page1(page1):
+                            key_hex = self._key_map.get(page1[:16].hex())
+                            if not key_hex:
+                                for key_salt, key_value in self._key_map.items():
+                                    if key_salt.startswith("_"):
+                                        continue
+                                    if verify_key(bytes.fromhex(key_value), page1):
+                                        key_hex = key_value
+                                        break
+                            if not key_hex:
+                                raise RuntimeError("no matching database key")
+                            raw_key = bytes.fromhex(key_hex)
+                            decrypt_database(db_snapshot, candidate_path, raw_key)
+                            was_encrypted = True
+                        else:
+                            raise RuntimeError("unsupported database header")
+
+                        if wal_snapshot is None or os.path.getsize(wal_snapshot) == 0:
+                            _publish_without_wal(candidate_path, out_path)
+                            published = True
+                        else:
+                            wal_present.append(rel)
+                            decoder = None
+                            if raw_key is not None:
+
+                                def decoder(page_no, payload):
+                                    return decrypt_page(raw_key, payload, page_no)
+
+                            try:
+                                recovery = recover_wal(
+                                    candidate_path,
+                                    wal_snapshot,
+                                    out_path,
+                                    page_decoder=decoder,
+                                    strict=False,
+                                )
+                            except (OSError, ValueError) as exc:
+                                detail = str(exc)
+                                recovery = None
+                            if recovery is not None and recovery.applied:
+                                wal_recovered.append(rel)
+                                published = True
+                                if recovery.scan.error is not None:
+                                    scan_error = recovery.scan.error
+                                    wal_degraded.append(rel)
+                                    wal_warnings.append(
+                                        f"{rel}: recovered through commit "
+                                        f"{recovery.scan.last_valid_commit_index}; "
+                                        f"checkpoint blocked by {scan_error.kind} at frame "
+                                        f"{scan_error.frame_index}"
+                                    )
+                            else:
+                                if (
+                                    recovery is not None
+                                    and recovery.scan.error is not None
+                                ):
+                                    scan_error = recovery.scan.error
+                                    detail = (
+                                        f"{scan_error.kind} at frame "
+                                        f"{scan_error.frame_index}: {scan_error.message}"
+                                    )
+                                elif (
+                                    recovery is not None
+                                    and recovery.scan.last_valid_commit_index is None
+                                ):
+                                    detail = "no committed WAL frame"
+                                elif recovery is not None:
+                                    detail = (
+                                        f"quick_check failed: {recovery.quick_check}"
+                                    )
+                                else:
+                                    detail = f"WAL validation failed: {detail}"
+                                wal_failed.append(rel)
+                                wal_warnings.append(f"{rel}: {detail}")
+                                if not os.path.exists(out_path):
+                                    _publish_without_wal(candidate_path, out_path)
+                                    published = True
+                                else:
+                                    wal_retained_snapshot.append(rel)
+
+                        if published:
+                            if was_encrypted:
+                                success += 1
+                            else:
+                                copied += 1
+                except (OSError, RuntimeError, ValueError) as exc:
                     failed += 1
+                    if rel in wal_present and rel not in wal_failed:
+                        wal_failed.append(rel)
+                        wal_warnings.append(f"{rel}: snapshot failed: {exc}")
+                finally:
+                    if os.path.exists(candidate_path):
+                        os.remove(candidate_path)
 
         return {
-            "success": success > 0,
+            "success": success + copied > 0 or bool(wal_retained_snapshot),
             "decrypted": success,
             "copied": copied,
             "failed": failed,
             "decrypted_dir": self._decrypted_dir,
+            "wal_present": wal_present,
+            "wal_recovered": wal_recovered,
+            "wal_degraded": wal_degraded,
+            "wal_failed": wal_failed,
+            "wal_retained_snapshot": wal_retained_snapshot,
+            "wal_checkpoint_safe": not wal_degraded and not wal_failed,
+            "wal_warning": "; ".join(wal_warnings) if wal_warnings else None,
         }
 
     def _get_db_path(self, name: str) -> Optional[str]:
@@ -199,7 +365,13 @@ class WeComReader:
         session_db = self._get_db_path("session.db")
         if not session_db:
             return []
-        return list_sessions(session_db, limit=limit, offset=offset, keyword=keyword, session_type=session_type)
+        return list_sessions(
+            session_db,
+            limit=limit,
+            offset=offset,
+            keyword=keyword,
+            session_type=session_type,
+        )
 
     def get_messages(
         self,
@@ -216,7 +388,12 @@ class WeComReader:
 
         self._ensure_user_map()
         messages = get_messages(
-            msg_db, conversation_id, limit=limit, offset=offset, since=since, until=until
+            msg_db,
+            conversation_id,
+            limit=limit,
+            offset=offset,
+            since=since,
+            until=until,
         )
 
         # Enrich with sender names
@@ -239,7 +416,9 @@ class WeComReader:
             return []
 
         self._ensure_user_map()
-        results = search_messages(msg_db, keyword, conversation_id=conversation_id, limit=limit)
+        results = search_messages(
+            msg_db, keyword, conversation_id=conversation_id, limit=limit
+        )
 
         for msg in results:
             sender_id = msg.get("sender_id")
