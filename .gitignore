@@ -29,3 +29,8 @@ config.json
 *.db
 *.db-wal
 *.db-shm
+
+# Coverage / workspace memory
+.coverage
+htmlcov/
+.workbuddy/
