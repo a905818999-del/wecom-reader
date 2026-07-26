@@ -1,6 +1,7 @@
 import base64
 import json
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -90,6 +91,37 @@ def test_same_payload_new_batch_adds_observation_not_version(tmp_path):
     assert result.messages_inserted == 0
     assert result.versions_inserted == 0
     assert result.observations_inserted == 1
+    assert row_count(ledger.db_path, "messages") == 1
+    assert row_count(ledger.db_path, "message_versions") == 1
+    assert row_count(ledger.db_path, "message_observations") == 2
+
+
+def test_concurrent_batches_serialize_without_losing_observations(tmp_path):
+    ledger = AssetLedger(tmp_path / "ledger.db")
+    record = {
+        "source_table": "message_table",
+        "source_rowid": 10,
+        "message_id": "m1",
+        "server_id": None,
+        "sequence": 1,
+        "content_type": 2,
+        "content": "hello",
+    }
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(
+            executor.map(
+                lambda batch_key: ledger.ingest_records(
+                    "acct", "message.db", batch_key, [record]
+                ),
+                ("batch-1", "batch-2"),
+            )
+        )
+
+    assert all(result.completed for result in results)
+    assert sum(result.messages_inserted for result in results) == 1
+    assert sum(result.versions_inserted for result in results) == 1
+    assert sum(result.observations_inserted for result in results) == 2
     assert row_count(ledger.db_path, "messages") == 1
     assert row_count(ledger.db_path, "message_versions") == 1
     assert row_count(ledger.db_path, "message_observations") == 2
