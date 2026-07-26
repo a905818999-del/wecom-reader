@@ -82,6 +82,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC"
 .msg-type-tag.voice { background: #fa8c16; }
 .msg-type-tag.file { background: #13c2c2; }
 .msg-type-tag.system { background: #999; }
+.mention { color: #1890ff; font-weight: 600; background: #e6f7ff; padding: 0 4px; border-radius: 3px; }
 
 /* Empty state */
 .empty-state { display: flex; align-items: center; justify-content: center; height: 100%; color: #999; font-size: 15px; }
@@ -156,6 +157,31 @@ function formatTime(ts) {
 
 function escapeHtml(s) { const d=document.createElement('div'); d.textContent=s||''; return d.innerHTML; }
 
+function escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function highlightMentions(content, mentions) {
+  const text = String(content || '');
+  const names = Array.isArray(mentions)
+    ? [...new Set(mentions.filter(name => typeof name === 'string' && name).map(
+      name => name.startsWith('@') ? name : `@${name}`
+    ))].sort((left, right) => right.length - left.length)
+    : [];
+  if (!names.length) return escapeHtml(text);
+
+  const pattern = new RegExp(names.map(escapeRegExp).join('|'), 'g');
+  let offset = 0;
+  let html = '';
+  for (const match of text.matchAll(pattern)) {
+    html += escapeHtml(text.slice(offset, match.index));
+    const escaped = escapeHtml(match[0]);
+    html += `<span class="mention" title="${escaped}">${escaped}</span>`;
+    offset = match.index + match[0].length;
+  }
+  return html + escapeHtml(text.slice(offset));
+}
+
 async function selectSession(id, name, type) {
   currentSession = id;
   currentOffset = 0;
@@ -186,7 +212,7 @@ async function loadMessages(sessionId, reset=false) {
     const tag = tname && tname!=='text' && !tname.startsWith('type_') ? `<span class="msg-type-tag ${typeClass}">${escapeHtml(tname)}</span>` : '';
     return `<div class="msg ${isSend?'sent':'received'}">
       ${!isSend && sender ? `<div class="msg-sender">${escapeHtml(sender)}</div>` : ''}
-      <div class="msg-bubble">${escapeHtml(content) || '<i style="color:#bbb">[空消息]</i>'}${tag}</div>
+      <div class="msg-bubble">${highlightMentions(content, m.mentions) || '<i style="color:#bbb">[空消息]</i>'}${tag}</div>
       <div class="msg-time">${formatTime(m.send_time)}</div>
     </div>`;
   }).join('');
