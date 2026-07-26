@@ -5,6 +5,7 @@ All commands output JSON by default. Use --table for human-readable tables.
 
 import json
 import sys
+from typing import Any
 
 import click
 
@@ -13,7 +14,7 @@ from .reader import WeComReader
 
 def _json_output(data, pretty=True):
     """Print JSON to stdout."""
-    kwargs = {"ensure_ascii": False}
+    kwargs: dict[str, Any] = {"ensure_ascii": False}
     if pretty:
         kwargs["indent"] = 2
     click.echo(json.dumps(data, **kwargs))

@@ -8,7 +8,7 @@ import json
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from wecom_reader.db.message import MSG_TYPES, _parse_content
 
@@ -87,7 +87,12 @@ class AssetLedger:
                             """,
                             (account_id, source_name, batch_key),
                         )
-                        batch_id = int(cursor.lastrowid)
+                        lastrowid = cursor.lastrowid
+                        if lastrowid is None:
+                            raise LedgerIntegrityError(
+                                "ingestion batch insert did not return a row id"
+                            )
+                        batch_id = int(lastrowid)
                     else:
                         batch_id = int(row["id"])
                         conn.execute(
@@ -413,9 +418,14 @@ class AssetLedger:
         raw_json = _canonical_json(version_record)
         version_hash = _sha256(raw_json)
         content_type = record.get("content_type")
-        unsupported = content_type not in MSG_TYPES
-        type_name = "unsupported" if unsupported else MSG_TYPES[content_type]
-        parsed_content = None if unsupported else _parse_content(record.get("content"))
+        if content_type in MSG_TYPES:
+            unsupported = False
+            type_name = MSG_TYPES[cast(int, content_type)]
+            parsed_content = _parse_content(record.get("content"))
+        else:
+            unsupported = True
+            type_name = "unsupported"
+            parsed_content = None
 
         cursor = conn.execute(
             """

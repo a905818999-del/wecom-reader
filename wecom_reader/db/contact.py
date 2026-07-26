@@ -35,7 +35,7 @@ def list_contacts(
 
         if _table_exists(conn, "user_table"):
             query = "SELECT id, name, real_name, account, external_corp_name, external_job FROM user_table"
-            params = []
+            params: list[object] = []
 
             if keyword:
                 query += " WHERE (name LIKE ? OR real_name LIKE ? OR account LIKE ? OR external_corp_name LIKE ?)"

@@ -38,7 +38,7 @@ def list_sessions(
 
         query = "SELECT id, name, roomname_remark, last_message_time, last_message_id FROM conversation_table"
         conditions = []
-        params = []
+        params: list[object] = []
 
         if keyword:
             conditions.append("(name LIKE ? OR roomname_remark LIKE ? OR id LIKE ?)")
