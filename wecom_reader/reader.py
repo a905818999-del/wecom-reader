@@ -17,6 +17,7 @@ from .crypto.key_extract import extract_key
 from .db.contact import build_user_map, get_group_members, list_contacts
 from .db.message import get_message_count, get_messages, search_messages
 from .db.session import get_session_count, list_sessions
+from .image_resolver import ImageResolver, ResolvedImage
 from .wal import recover_wal
 
 
@@ -124,6 +125,7 @@ class WeComReader:
         )
         self._key_map = key_map
         self._user_map: Optional[dict] = None
+        self._image_resolver: Optional[ImageResolver] = None
 
     @property
     def db_dir(self) -> Optional[str]:
@@ -469,3 +471,14 @@ class WeComReader:
         if not msg_db:
             return 0
         return get_message_count(msg_db, conversation_id)
+
+    @property
+    def image_resolver(self) -> ImageResolver:
+        """Return the image resolver without duplicating its lookup logic."""
+        if self._image_resolver is None:
+            self._image_resolver = ImageResolver(self._db_dir, self._decrypted_dir)
+        return self._image_resolver
+
+    def resolve_image(self, message_id: str) -> Optional[ResolvedImage]:
+        """Resolve an image message to a validated local cache file."""
+        return self.image_resolver.resolve_image(message_id)
