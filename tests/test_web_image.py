@@ -104,3 +104,4 @@ def test_index_renders_only_supported_image_message_types() -> None:
     assert "msg-image-fallback" in html
     assert "span.textContent=this.alt" in html
     assert "outerHTML=" not in html
+    assert "return highlightMentions(content, m.mentions)" in html

@@ -84,6 +84,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC"
 .msg-type-tag.system { background: #999; }
 .msg-image { display: block; max-width: 260px; max-height: 320px; object-fit: contain; }
 .msg-image-fallback { color: #999; font-size: 13px; }
+.mention { color: #1890ff; font-weight: 600; background: #e6f7ff; padding: 0 4px; border-radius: 3px; }
 
 /* Empty state */
 .empty-state { display: flex; align-items: center; justify-content: center; height: 100%; color: #999; font-size: 15px; }
@@ -158,6 +159,31 @@ function formatTime(ts) {
 
 function escapeHtml(s) { const d=document.createElement('div'); d.textContent=s||''; return d.innerHTML; }
 
+function escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function highlightMentions(content, mentions) {
+  const text = String(content || '');
+  const names = Array.isArray(mentions)
+    ? [...new Set(mentions.filter(name => typeof name === 'string' && name).map(
+      name => name.startsWith('@') ? name : `@${name}`
+    ))].sort((left, right) => right.length - left.length)
+    : [];
+  if (!names.length) return escapeHtml(text);
+
+  const pattern = new RegExp(names.map(escapeRegExp).join('|'), 'g');
+  let offset = 0;
+  let html = '';
+  for (const match of text.matchAll(pattern)) {
+    html += escapeHtml(text.slice(offset, match.index));
+    const escaped = escapeHtml(match[0]);
+    html += `<span class="mention" title="${escaped}">${escaped}</span>`;
+    offset = match.index + match[0].length;
+  }
+  return html + escapeHtml(text.slice(offset));
+}
+
 function renderMessageContent(m) {
   const content = m.content || '';
   if (m.content_type === 4 || m.content_type === 15) {
@@ -165,7 +191,7 @@ function renderMessageContent(m) {
     const imageUrl = `/api/image/${encodeURIComponent(m.message_id)}`;
     return `<a href="${imageUrl}" target="_blank" rel="noopener"><img class="msg-image" src="${imageUrl}" loading="lazy" alt="${fallback}" onerror="const span=document.createElement('span');span.className='msg-image-fallback';span.textContent=this.alt;this.closest('a').replaceWith(span)"></a>`;
   }
-  return escapeHtml(content) || '<i style="color:#bbb">[空消息]</i>';
+  return highlightMentions(content, m.mentions) || '<i style="color:#bbb">[空消息]</i>';
 }
 
 async function selectSession(id, name, type) {
@@ -192,7 +218,6 @@ async function loadMessages(sessionId, reset=false) {
   const html = data.messages.map(m => {
     const isSend = false; // WeCom doesn't expose self_id easily, treat all as received
     const sender = m.sender_name || (m.sender_id != null ? String(m.sender_id) : '');
-    const content = m.content || '';
     const tname = m.type_name || '';
     const typeClass = {image:'image',voice:'voice','image/file':'file',status:'system',meeting:'system',call:'system',app_message:'file'}[tname]||'';
     const tag = tname && tname!=='text' && !tname.startsWith('type_') ? `<span class="msg-type-tag ${typeClass}">${escapeHtml(tname)}</span>` : '';
