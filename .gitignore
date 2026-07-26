@@ -29,6 +29,11 @@ config.json
 *.db
 *.db-wal
 *.db-shm
+Cache/Image/
+CacheMapping/
+.workbuddy/
+api_at_*.txt
+parse_output.txt
 
 # Test output
 .coverage
