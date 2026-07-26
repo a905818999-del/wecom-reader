@@ -93,6 +93,10 @@ def _extract_mentions(content: str) -> list[str]:
     return list(dict.fromkeys(MENTION_RE.findall(content)))
 
 
+def _existing_message_tables(conn: sqlite3.Connection) -> list[str]:
+    return [table for table in MESSAGE_TABLES if _table_exists(conn, table)]
+
+
 def get_messages(
     db_path: str,
     conversation_id: str,
@@ -110,54 +114,59 @@ def get_messages(
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     try:
-        messages = []
-        for table in MESSAGE_TABLES:
-            if not _table_exists(conn, table):
-                continue
+        tables = _existing_message_tables(conn)
+        if not tables:
+            return []
 
-            # Use explicit column names matching actual schema
-            query = (
-                f'SELECT message_id, server_id, sequence, sender_id, conversation_id, '
-                f'content_type, send_time, flag, content, from_app_id '
-                f'FROM "{table}" WHERE conversation_id = ?'
-            )
-
-            params: list = [conversation_id]
+        selects = []
+        params = []
+        for table in tables:
+            where = "conversation_id = ?"
+            table_params: list = [conversation_id]
 
             if since is not None:
-                query += " AND send_time >= ?"
-                params.append(since)
+                where += " AND send_time >= ?"
+                table_params.append(since)
             if until is not None:
-                query += " AND send_time < ?"
-                params.append(until)
+                where += " AND send_time < ?"
+                table_params.append(until)
             if msg_type is not None:
-                query += " AND content_type = ?"
-                params.append(msg_type)
+                where += " AND content_type = ?"
+                table_params.append(msg_type)
 
-            query += " ORDER BY sequence DESC LIMIT ? OFFSET ?"
-            params.extend([limit, offset])
+            selects.append(
+                f'SELECT message_id, server_id, sequence, sender_id, '
+                f'conversation_id, content_type, send_time, flag, content, '
+                f'from_app_id FROM "{table}" WHERE {where}'
+            )
+            params.extend(table_params)
 
-            for row in conn.execute(query, params):
-                ct = row["content_type"]
-                content = _parse_content(row["content"])
-                msg = {
-                    "message_id": row["message_id"],
-                    "server_id": row["server_id"],
-                    "sequence": row["sequence"],
-                    "sender_id": row["sender_id"],
-                    "conversation_id": row["conversation_id"],
-                    "content_type": ct,
-                    "type_name": MSG_TYPES.get(ct, f"type_{ct}"),
-                    "send_time": row["send_time"],
-                    "flag": row["flag"],
-                    "content": content,
-                    "mentions": _extract_mentions(content),
-                    "from_app_id": row["from_app_id"],
-                }
-                messages.append(msg)
+        query = (
+            "SELECT * FROM ("
+            + " UNION ALL ".join(selects)
+            + ") ORDER BY sequence DESC LIMIT ? OFFSET ?"
+        )
+        params.extend([limit, offset])
 
-        messages.sort(key=lambda m: m.get("sequence", 0), reverse=True)
-        return messages[:limit]
+        messages = []
+        for row in conn.execute(query, params):
+            ct = row["content_type"]
+            content = _parse_content(row["content"])
+            messages.append({
+                "message_id": row["message_id"],
+                "server_id": row["server_id"],
+                "sequence": row["sequence"],
+                "sender_id": row["sender_id"],
+                "conversation_id": row["conversation_id"],
+                "content_type": ct,
+                "type_name": MSG_TYPES.get(ct, f"type_{ct}"),
+                "send_time": row["send_time"],
+                "flag": row["flag"],
+                "content": content,
+                "mentions": _extract_mentions(content),
+                "from_app_id": row["from_app_id"],
+            })
+        return messages
     finally:
         conn.close()
 
@@ -172,44 +181,51 @@ def search_messages(
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     try:
-        messages = []
-        for table in MESSAGE_TABLES:
-            if not _table_exists(conn, table):
-                continue
+        tables = _existing_message_tables(conn)
+        if not tables:
+            return []
 
-            query = (
-                f'SELECT message_id, server_id, sequence, sender_id, conversation_id, '
-                f'content_type, send_time, flag, content '
-                f'FROM "{table}" WHERE content LIKE ?'
-            )
-            params: list = [f"%{keyword}%"]
-
+        selects = []
+        params = []
+        for table in tables:
+            where = "content LIKE ?"
+            table_params: list = [f"%{keyword}%"]
             if conversation_id:
-                query += " AND conversation_id = ?"
-                params.append(conversation_id)
+                where += " AND conversation_id = ?"
+                table_params.append(conversation_id)
 
-            query += " ORDER BY sequence DESC LIMIT ?"
-            params.append(limit)
+            selects.append(
+                f'SELECT message_id, server_id, sequence, sender_id, '
+                f'conversation_id, content_type, send_time, flag, content '
+                f'FROM "{table}" WHERE {where}'
+            )
+            params.extend(table_params)
 
-            for row in conn.execute(query, params):
-                ct = row["content_type"]
-                content = _parse_content(row["content"])
-                messages.append({
-                    "message_id": row["message_id"],
-                    "server_id": row["server_id"],
-                    "sequence": row["sequence"],
-                    "sender_id": row["sender_id"],
-                    "conversation_id": row["conversation_id"],
-                    "content_type": ct,
-                    "type_name": MSG_TYPES.get(ct, f"type_{ct}"),
-                    "send_time": row["send_time"],
-                    "flag": row["flag"],
-                    "content": content,
-                    "mentions": _extract_mentions(content),
-                })
+        query = (
+            "SELECT * FROM ("
+            + " UNION ALL ".join(selects)
+            + ") ORDER BY sequence DESC LIMIT ?"
+        )
+        params.append(limit)
 
-        messages.sort(key=lambda m: m.get("sequence", 0), reverse=True)
-        return messages[:limit]
+        messages = []
+        for row in conn.execute(query, params):
+            ct = row["content_type"]
+            content = _parse_content(row["content"])
+            messages.append({
+                "message_id": row["message_id"],
+                "server_id": row["server_id"],
+                "sequence": row["sequence"],
+                "sender_id": row["sender_id"],
+                "conversation_id": row["conversation_id"],
+                "content_type": ct,
+                "type_name": MSG_TYPES.get(ct, f"type_{ct}"),
+                "send_time": row["send_time"],
+                "flag": row["flag"],
+                "content": content,
+                "mentions": _extract_mentions(content),
+            })
+        return messages
     finally:
         conn.close()
 
