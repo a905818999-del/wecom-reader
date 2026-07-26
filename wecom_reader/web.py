@@ -4,10 +4,6 @@ Usage: python -m wecom_reader.web --db-dir E:/WXWork/1688851235369380/Data
 """
 
 import json
-import os
-import sqlite3
-import sys
-import time
 from datetime import datetime
 
 from flask import Flask, Response, render_template_string, request
