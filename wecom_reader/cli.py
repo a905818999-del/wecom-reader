@@ -21,7 +21,9 @@ def _json_output(data, pretty=True):
 
 @click.group()
 @click.option("--db-dir", envvar="WXWORK_DB_DIR", help="WeCom data directory")
-@click.option("--decrypted-dir", default="wxwork_decrypted", help="Decrypted DB output directory")
+@click.option(
+    "--decrypted-dir", default="wxwork_decrypted", help="Decrypted DB output directory"
+)
 @click.pass_context
 def main(ctx, db_dir, decrypted_dir):
     """wecom-reader — Read WeCom (企业微信) local chat history.
@@ -127,6 +129,23 @@ def group_members(ctx, session_id):
     _json_output({"count": len(result), "members": result})
 
 
+@main.command("serve-api")
+@click.option("--host", default="127.0.0.1", show_default=True, help="Listen address")
+@click.option("--port", default=8765, show_default=True, type=click.IntRange(1, 65535))
+@click.pass_context
+def serve_api(ctx, host, port):
+    """Serve the local JSON API."""
+    from .http_api import create_app
+
+    reader: WeComReader = ctx.obj["reader"]
+    create_app(reader).run(
+        host=host,
+        port=port,
+        debug=False,
+        use_reloader=False,
+    )
+
+
 @main.command()
 @click.argument("session_id")
 @click.option("--format", "fmt", type=click.Choice(["json", "csv"]), default="json")
@@ -142,6 +161,7 @@ def export(ctx, session_id, fmt, output):
     elif fmt == "csv":
         import csv
         import io
+
         buf = io.StringIO()
         if messages:
             writer = csv.DictWriter(buf, fieldnames=messages[0].keys())
