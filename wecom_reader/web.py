@@ -6,7 +6,7 @@ Usage: python -m wecom_reader.web --db-dir E:/WXWork/1688851235369380/Data
 import json
 from datetime import datetime
 
-from flask import Flask, Response, render_template_string, request
+from flask import Flask, Response, render_template_string, request, send_file
 
 from .reader import WeComReader
 
@@ -82,6 +82,8 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC"
 .msg-type-tag.voice { background: #fa8c16; }
 .msg-type-tag.file { background: #13c2c2; }
 .msg-type-tag.system { background: #999; }
+.msg-image { display: block; max-width: 260px; max-height: 320px; object-fit: contain; }
+.msg-image-fallback { color: #999; font-size: 13px; }
 .mention { color: #1890ff; font-weight: 600; background: #e6f7ff; padding: 0 4px; border-radius: 3px; }
 
 /* Empty state */
@@ -182,6 +184,16 @@ function highlightMentions(content, mentions) {
   return html + escapeHtml(text.slice(offset));
 }
 
+function renderMessageContent(m) {
+  const content = m.content || '';
+  if (m.content_type === 4 || m.content_type === 15) {
+    const fallback = escapeHtml(content) || '[图片未缓存]';
+    const imageUrl = `/api/image/${encodeURIComponent(m.message_id)}`;
+    return `<a href="${imageUrl}" target="_blank" rel="noopener"><img class="msg-image" src="${imageUrl}" loading="lazy" alt="${fallback}" onerror="const span=document.createElement('span');span.className='msg-image-fallback';span.textContent=this.alt;this.closest('a').replaceWith(span)"></a>`;
+  }
+  return highlightMentions(content, m.mentions) || '<i style="color:#bbb">[空消息]</i>';
+}
+
 async function selectSession(id, name, type) {
   currentSession = id;
   currentOffset = 0;
@@ -206,13 +218,12 @@ async function loadMessages(sessionId, reset=false) {
   const html = data.messages.map(m => {
     const isSend = false; // WeCom doesn't expose self_id easily, treat all as received
     const sender = m.sender_name || (m.sender_id != null ? String(m.sender_id) : '');
-    const content = m.content || '';
     const tname = m.type_name || '';
     const typeClass = {image:'image',voice:'voice','image/file':'file',status:'system',meeting:'system',call:'system',app_message:'file'}[tname]||'';
     const tag = tname && tname!=='text' && !tname.startsWith('type_') ? `<span class="msg-type-tag ${typeClass}">${escapeHtml(tname)}</span>` : '';
     return `<div class="msg ${isSend?'sent':'received'}">
       ${!isSend && sender ? `<div class="msg-sender">${escapeHtml(sender)}</div>` : ''}
-      <div class="msg-bubble">${highlightMentions(content, m.mentions) || '<i style="color:#bbb">[空消息]</i>'}${tag}</div>
+      <div class="msg-bubble">${renderMessageContent(m)}${tag}</div>
       <div class="msg-time">${formatTime(m.send_time)}</div>
     </div>`;
   }).join('');
@@ -292,6 +303,14 @@ def api_search():
     limit = int(request.args.get("limit", 50))
     results = reader.search_messages(keyword, conversation_id=session_id, limit=limit)
     return safe_jsonify({"count": len(results), "results": results})
+
+
+@app.route("/api/image/<message_id>")
+def api_image(message_id):
+    resolved = reader.resolve_image(message_id)
+    if not resolved or not resolved.local_path.is_file():
+        return Response("", status=404)
+    return send_file(resolved.local_path, mimetype=resolved.mime)
 
 
 @app.route("/api/refresh", methods=["POST"])
