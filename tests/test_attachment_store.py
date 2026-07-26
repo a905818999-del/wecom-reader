@@ -1,5 +1,4 @@
 import hashlib
-import os
 import sqlite3
 import threading
 import time
@@ -77,19 +76,14 @@ def test_source_change_creates_retryable_error_and_removes_temp(tmp_path, monkey
     source = tmp_path / "source.bin"
     source.write_bytes(b"before")
     store = AttachmentStore(tmp_path / "ledger.db", tmp_path / "assets")
-    original_stat = os.stat
-    source_stat_calls = 0
+    original_copy = store._copy_and_hash
 
-    def changing_stat(path, *args, **kwargs):
-        nonlocal source_stat_calls
-        result = original_stat(path, *args, **kwargs)
-        if os.fspath(path) == os.fspath(source):
-            source_stat_calls += 1
-            if source_stat_calls == 3:
-                source.write_bytes(b"after")
+    def change_source_after_copy(source_path, temp_path):
+        result = original_copy(source_path, temp_path)
+        source_path.write_bytes(b"changed after copy")
         return result
 
-    monkeypatch.setattr(os, "stat", changing_stat)
+    monkeypatch.setattr(store, "_copy_and_hash", change_source_after_copy)
 
     reference = store.ingest_file("acct", "msg-1", source, "image", "v1")
 
