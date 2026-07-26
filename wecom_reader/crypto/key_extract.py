@@ -20,7 +20,8 @@ from typing import Optional
 from .decrypt import is_plain_sqlite, is_wxsqlite3_aes128_page1, verify_key
 
 # Windows API constants
-kernel32 = ctypes.windll.kernel32
+_windll = getattr(ctypes, "windll", None)
+kernel32 = _windll.kernel32 if _windll is not None else None
 MEM_COMMIT = 0x1000
 READABLE = {0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80}
 
@@ -174,6 +175,9 @@ def extract_key(
     Raises:
         RuntimeError: If WXWork.exe is not running or no keys found.
     """
+    if kernel32 is None:
+        raise RuntimeError("WeCom process-memory key extraction is only supported on Windows")
+
     if db_dir is None:
         db_dir = _auto_detect_db_dir()
     if not db_dir or not os.path.isdir(db_dir):
