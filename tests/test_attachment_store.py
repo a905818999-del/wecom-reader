@@ -2,6 +2,7 @@ import hashlib
 import os
 import sqlite3
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 import wecom_reader.attachment_store as attachment_store_module
@@ -222,10 +223,76 @@ def test_concurrent_ingest_uses_one_reference_and_atomic_attempt_count(
 
     current = store.get_reference(*arguments)
     assert {result.reference_id for result in results} == {current.reference_id}
+    assert {result.status for result in results} == {"stored"}
     assert current.status == "stored"
     assert current.attempts == 2
     assert table_count(store.ledger_db_path, "attachment_references") == 1
     assert table_count(store.ledger_db_path, "attachments") == 1
+
+
+def test_superseded_concurrent_attempt_waits_for_terminal_reference(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"payload")
+    store = AttachmentStore(tmp_path / "ledger.db", tmp_path / "assets")
+    original_begin = store._begin_attempt
+    original_copy = store._copy_and_hash
+    original_wait = store._wait_for_terminal_reference
+    thread_state = threading.local()
+    first_began = threading.Event()
+    second_began = threading.Event()
+    first_wait_started = threading.Event()
+    allow_second_copy = threading.Event()
+
+    def coordinated_begin(*args, **kwargs):
+        reference_id, attempts = original_begin(*args, **kwargs)
+        thread_state.attempts = attempts
+        if attempts == 1:
+            first_began.set()
+        if attempts == 2:
+            second_began.set()
+        return reference_id, attempts
+
+    def coordinated_copy(source_path, temp_path):
+        result = original_copy(source_path, temp_path)
+        if thread_state.attempts == 1:
+            assert second_began.wait(timeout=5)
+        if thread_state.attempts == 2:
+            assert allow_second_copy.wait(timeout=5)
+        return result
+
+    def coordinated_wait(reference_id):
+        if thread_state.attempts == 1:
+            first_wait_started.set()
+        return original_wait(reference_id)
+
+    def release_second_copy_after_first_waits():
+        assert first_wait_started.wait(timeout=5)
+        time.sleep(0.05)
+        allow_second_copy.set()
+
+    monkeypatch.setattr(store, "_begin_attempt", coordinated_begin)
+    monkeypatch.setattr(store, "_copy_and_hash", coordinated_copy)
+    monkeypatch.setattr(store, "_wait_for_terminal_reference", coordinated_wait)
+    arguments = ("acct", "msg-1", source, "image", "v1")
+    releaser = threading.Thread(target=release_second_copy_after_first_waits)
+    releaser.start()
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first = executor.submit(store.ingest_file, *arguments)
+            assert first_began.wait(timeout=5)
+            second = executor.submit(store.ingest_file, *arguments)
+            results = [first.result(timeout=5), second.result(timeout=5)]
+    finally:
+        allow_second_copy.set()
+        releaser.join(timeout=5)
+
+    current = store.get_reference(*arguments)
+    assert {result.status for result in results} == {"stored"}
+    assert current.status == "stored"
+    assert current.attempts == 2
+    assert table_count(store.ledger_db_path, "attachment_references") == 1
 
 
 def test_success_record_failure_is_explicit_and_retryable(tmp_path, monkeypatch):

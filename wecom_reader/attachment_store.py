@@ -5,12 +5,15 @@ from __future__ import annotations
 import hashlib
 import os
 import sqlite3
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
 
 _CHUNK_SIZE = 1024 * 1024
+_PENDING_WAIT_INTERVAL_SECONDS = 0.01
+_PENDING_WAIT_TIMEOUT_SECONDS = 2.0
 
 
 class _ContentAddressConflict(RuntimeError):
@@ -132,7 +135,7 @@ class AttachmentStore:
             current = self._reference_by_id(reference_id)
             if current.attempts != attempts:
                 _remove_if_exists(temp_path)
-                return current
+                return self._wait_for_terminal_reference(reference_id)
 
             target = self._target_path(digest)
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -432,14 +435,11 @@ class AttachmentStore:
                         attempts,
                     ),
                 ).fetchone()
-                if row is None:
-                    row = conn.execute(
-                        "SELECT * FROM attachment_references WHERE id = ?",
-                        (reference_id,),
-                    ).fetchone()
-                return _reference_from_row(row)
+                if row is not None:
+                    return _reference_from_row(row)
         finally:
             conn.close()
+        return self._wait_for_terminal_reference(reference_id)
 
     def _finish_error(
         self,
@@ -477,14 +477,48 @@ class AttachmentStore:
                         attempts,
                     ),
                 ).fetchone()
-                if row is None:
-                    row = conn.execute(
-                        "SELECT * FROM attachment_references WHERE id = ?",
-                        (reference_id,),
-                    ).fetchone()
-                return _reference_from_row(row)
+                if row is not None:
+                    return _reference_from_row(row)
         finally:
             conn.close()
+        return self._wait_for_terminal_reference(reference_id)
+
+    def _wait_for_terminal_reference(self, reference_id: int) -> AttachmentReference:
+        deadline = time.monotonic() + _PENDING_WAIT_TIMEOUT_SECONDS
+        while True:
+            reference = self._reference_by_id(reference_id)
+            if reference.status != "pending":
+                return reference
+            if time.monotonic() >= deadline:
+                return self._finish_pending_timeout(reference)
+            time.sleep(_PENDING_WAIT_INTERVAL_SECONDS)
+
+    def _finish_pending_timeout(
+        self, reference: AttachmentReference
+    ) -> AttachmentReference:
+        conn = self._connect()
+        try:
+            with conn:
+                row = conn.execute(
+                    """
+                    UPDATE attachment_references
+                    SET attachment_id = NULL,
+                        storage_path = NULL,
+                        status = 'error',
+                        error_code = 'pending_timeout',
+                        error_message = 'superseded ingest did not reach a terminal status before timeout',
+                        retryable = 1,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ? AND attempts = ? AND status = 'pending'
+                    RETURNING *
+                    """,
+                    (reference.reference_id, reference.attempts),
+                ).fetchone()
+                if row is not None:
+                    return _reference_from_row(row)
+        finally:
+            conn.close()
+        return self._wait_for_terminal_reference(reference.reference_id)
 
     def _copy_and_hash(self, source: Path, temp_path: Path) -> tuple[str, int]:
         temp_path.parent.mkdir(parents=True, exist_ok=True)
