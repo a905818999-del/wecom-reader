@@ -29,3 +29,9 @@ config.json
 *.db
 *.db-wal
 *.db-shm
+
+# Test output
+.coverage
+coverage.xml
+htmlcov/
+.pytest_cache/
