@@ -20,6 +20,12 @@ from .db.session import get_session_count, list_sessions
 from .wal import recover_wal
 
 
+def _database_fingerprint(path: str) -> tuple[int, int]:
+    """Return main database metadata that should stay stable during a snapshot."""
+    stat = os.stat(path)
+    return stat.st_size, stat.st_mtime_ns
+
+
 def _wal_fingerprint(path: str) -> tuple[int, int, bytes] | None:
     """Return enough WAL metadata to detect a reset or concurrent write."""
     try:
@@ -38,23 +44,27 @@ def _copy_database_snapshot(db_path: str, snapshot_dir: str) -> tuple[str, str |
     wal_copy = f"{db_copy}-wal"
 
     for _attempt in range(3):
-        wal_before = _wal_fingerprint(wal_path)
         try:
+            db_before = _database_fingerprint(db_path)
+            wal_before = _wal_fingerprint(wal_path)
             shutil.copy2(db_path, db_copy)
             if wal_before is not None:
                 shutil.copy2(wal_path, wal_copy)
             elif os.path.exists(wal_copy):
                 os.remove(wal_copy)
+            db_after = _database_fingerprint(db_path)
+            wal_after = _wal_fingerprint(wal_path)
         except OSError:
             for partial_path in (db_copy, wal_copy):
                 if os.path.exists(partial_path):
                     os.remove(partial_path)
             continue
-        wal_after = _wal_fingerprint(wal_path)
-        if wal_before == wal_after:
+        if db_before == db_after and wal_before == wal_after:
             return db_copy, wal_copy if wal_before is not None else None
 
-    raise RuntimeError("database WAL changed while the read-only snapshot was copied")
+    raise RuntimeError(
+        "database or WAL changed while the read-only snapshot was copied"
+    )
 
 
 def _sqlite_quick_check(path: str) -> str:

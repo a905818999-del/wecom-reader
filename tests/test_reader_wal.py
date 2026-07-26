@@ -164,3 +164,31 @@ def test_snapshot_retries_when_live_wal_disappears(tmp_path, monkeypatch):
     assert Path(db_copy).read_bytes() == b"database"
     assert wal_copy is None
     assert wal_attempts == 1
+
+
+def test_snapshot_retries_when_live_database_changes_during_copy(tmp_path, monkeypatch):
+    source_db = tmp_path / "message.db"
+    source_db.write_bytes(b"old database")
+    snapshot_dir = tmp_path / "snapshot"
+    snapshot_dir.mkdir()
+    real_copy2 = shutil.copy2
+    db_attempts = 0
+
+    def copy2_with_main_database_change(source, destination):
+        nonlocal db_attempts
+        result = real_copy2(source, destination)
+        if Path(source) == source_db:
+            db_attempts += 1
+            if db_attempts == 1:
+                source_db.write_bytes(b"new database")
+        return result
+
+    monkeypatch.setattr(reader_module.shutil, "copy2", copy2_with_main_database_change)
+
+    db_copy, wal_copy = reader_module._copy_database_snapshot(
+        str(source_db), str(snapshot_dir)
+    )
+
+    assert Path(db_copy).read_bytes() == b"new database"
+    assert wal_copy is None
+    assert db_attempts == 2
