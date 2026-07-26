@@ -195,9 +195,23 @@ class WeComReader:
 
         # Decrypt databases
         os.makedirs(self._decrypted_dir, exist_ok=True)
+        from .export.audit import SOURCE_MANIFEST_NAME, write_audit_source_manifest
+
+        audit_manifest_path = os.path.join(
+            self._decrypted_dir,
+            SOURCE_MANIFEST_NAME,
+        )
+        try:
+            os.remove(audit_manifest_path)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            raise RuntimeError("could not invalidate audit source manifest") from exc
+
         success = 0
         copied = 0
         failed = 0
+        audit_message_published = False
         wal_present: list[str] = []
         wal_recovered: list[str] = []
         wal_degraded: list[str] = []
@@ -321,6 +335,8 @@ class WeComReader:
                                     wal_retained_snapshot.append(rel)
 
                         if published:
+                            if os.path.normcase(rel) == os.path.normcase("message.db"):
+                                audit_message_published = True
                             if was_encrypted:
                                 success += 1
                             else:
@@ -333,6 +349,16 @@ class WeComReader:
                 finally:
                     if os.path.exists(candidate_path):
                         os.remove(candidate_path)
+
+        audit_source_manifest = False
+        if audit_message_published:
+            try:
+                audit_source_manifest = write_audit_source_manifest(
+                    self._db_dir,
+                    self._decrypted_dir,
+                )
+            except (OSError, RuntimeError, ValueError) as exc:
+                wal_warnings.append(f"audit source manifest: {type(exc).__name__}")
 
         return {
             "success": success + copied > 0 or bool(wal_retained_snapshot),
@@ -347,6 +373,7 @@ class WeComReader:
             "wal_retained_snapshot": wal_retained_snapshot,
             "wal_checkpoint_safe": not wal_degraded and not wal_failed,
             "wal_warning": "; ".join(wal_warnings) if wal_warnings else None,
+            "audit_source_manifest": audit_source_manifest,
         }
 
     def _get_db_path(self, name: str) -> Optional[str]:

@@ -41,6 +41,23 @@ python -m wecom_reader.cli search "关键词"
 python -m wecom_reader.cli contacts --keyword "张三"
 ```
 
+### 脱敏审计导出
+
+先运行 `init` 生成稳定的解密快照，再把全部消息导出为不含正文、姓名和本地路径的
+JSONL。账号、会话、消息、发送者、正文和资源引用均使用确定性的 SHA-256 哈希。
+
+```bash
+python -m wecom_reader.cli \
+  --db-dir "E:\WXWork\<account_id>\Data" \
+  export-audit --output output/reader-export.jsonl
+```
+
+导出采用同目录临时文件并在成功后原子替换目标；读取失败、空导出或写入失败会返回
+非零退出码，已有的成功文件不会被半截结果覆盖。`init` 会生成不含原始路径或账号的
+来源清单，导出前会核对账号、来源目录和解密 `message.db` 指纹，防止账号与快照错配。
+JSONL 行顺序固定为消息表顺序和各表 `rowid` 顺序；下游应使用稳定键与 `sequence`
+判断消息身份和时间顺序，不应依赖文件行号。
+
 ### Python 库
 
 ```python
