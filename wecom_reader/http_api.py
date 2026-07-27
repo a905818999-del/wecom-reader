@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from flask import Flask, Response, request
+from flask.typing import ResponseReturnValue
 
 from .db.message import MESSAGE_TABLES, MSG_TYPES, _parse_content
 
@@ -33,7 +34,7 @@ def create_app(reader: Any) -> Flask:
     refresh_state_lock = threading.Lock()
 
     @app.get("/api/v1/health")
-    def health() -> Response:
+    def health() -> ResponseReturnValue:
         with refresh_state_lock:
             last_refresh = app.config["LAST_REFRESH_RESULT"]
             refresh_in_progress = app.config["REFRESH_IN_PROGRESS"]
@@ -42,7 +43,7 @@ def create_app(reader: Any) -> Flask:
         )
 
     @app.get("/api/v1/sessions")
-    def sessions() -> Response:
+    def sessions() -> ResponseReturnValue:
         try:
             limit = _parse_limit(request.args.get("limit"))
         except ValueError as exc:
@@ -53,7 +54,7 @@ def create_app(reader: Any) -> Flask:
         return _json_response({"sessions": result, "count": len(result)})
 
     @app.get("/api/v1/messages")
-    def messages() -> Response:
+    def messages() -> ResponseReturnValue:
         conversation_id = request.args.get("conversation_id")
         if not conversation_id:
             return _bad_request(
@@ -80,7 +81,7 @@ def create_app(reader: Any) -> Flask:
         return _json_response(page)
 
     @app.get("/api/v1/search")
-    def search() -> Response:
+    def search() -> ResponseReturnValue:
         q = request.args.get("q")
         if not q:
             return _bad_request("missing_q", "q is required")
@@ -95,7 +96,7 @@ def create_app(reader: Any) -> Flask:
         return _json_response({"results": result, "count": len(result)})
 
     @app.post("/api/v1/refresh")
-    def refresh() -> Response:
+    def refresh() -> ResponseReturnValue:
         with refresh_run_lock:
             with refresh_state_lock:
                 app.config["REFRESH_IN_PROGRESS"] = True

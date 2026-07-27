@@ -4,7 +4,7 @@ import os
 import shutil
 import sqlite3
 import tempfile
-from typing import Optional
+from typing import Any, Optional
 
 from .crypto.decrypt import (
     decrypt_database,
@@ -137,7 +137,7 @@ class WeComReader:
 
     def status(self) -> dict:
         """Check current status of decrypted data."""
-        result = {
+        result: dict[str, Any] = {
             "db_dir": self._db_dir,
             "decrypted_dir": self._decrypted_dir,
             "decrypted": os.path.isdir(self._decrypted_dir),
@@ -409,10 +409,11 @@ class WeComReader:
         )
 
         # Enrich with sender names
+        user_map = self._user_map or {}
         for msg in messages:
             sender_id = msg.get("sender_id")
-            if sender_id and isinstance(sender_id, int) and sender_id in self._user_map:
-                msg["sender_name"] = self._user_map[sender_id]
+            if sender_id and isinstance(sender_id, int) and sender_id in user_map:
+                msg["sender_name"] = user_map[sender_id]
 
         return messages
 
@@ -432,10 +433,11 @@ class WeComReader:
             msg_db, keyword, conversation_id=conversation_id, limit=limit
         )
 
+        user_map = self._user_map or {}
         for msg in results:
             sender_id = msg.get("sender_id")
-            if sender_id and isinstance(sender_id, int) and sender_id in self._user_map:
-                msg["sender_name"] = self._user_map[sender_id]
+            if sender_id and isinstance(sender_id, int) and sender_id in user_map:
+                msg["sender_name"] = user_map[sender_id]
 
         return results
 

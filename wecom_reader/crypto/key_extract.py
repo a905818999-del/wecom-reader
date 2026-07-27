@@ -15,7 +15,7 @@ import re
 import struct
 import subprocess
 import time
-from typing import Optional
+from typing import Any, Optional, TypeAlias, cast
 
 from .decrypt import is_plain_sqlite, is_wxsqlite3_aes128_page1, verify_key
 
@@ -24,6 +24,9 @@ _windll = getattr(ctypes, "windll", None)
 kernel32 = _windll.kernel32 if _windll is not None else None
 MEM_COMMIT = 0x1000
 READABLE = {0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80}
+DbFile: TypeAlias = tuple[str, str, int, str, bytes]
+MemoryRegion: TypeAlias = tuple[int, int, bytes]
+SaltToDbs: TypeAlias = dict[str, list[str]]
 
 
 class MBI(ctypes.Structure):
@@ -44,7 +47,8 @@ class MBI(ctypes.Structure):
 def _read_process_memory(handle, addr: int, size: int) -> Optional[bytes]:
     buf = ctypes.create_string_buffer(size)
     n = ctypes.c_size_t(0)
-    if kernel32.ReadProcessMemory(
+    winapi = cast(Any, kernel32)
+    if winapi.ReadProcessMemory(
         handle, ctypes.c_uint64(addr), buf, size, ctypes.byref(n)
     ):
         return buf.raw[: n.value]
@@ -55,8 +59,9 @@ def _enum_memory_regions(handle) -> list[tuple[int, int]]:
     regs = []
     addr = 0
     mbi = MBI()
+    winapi = cast(Any, kernel32)
     while addr < 0x7FFFFFFFFFFF:
-        if kernel32.VirtualQueryEx(
+        if winapi.VirtualQueryEx(
             handle, ctypes.c_uint64(addr), ctypes.byref(mbi), ctypes.sizeof(mbi)
         ) == 0:
             break
@@ -123,10 +128,10 @@ def _auto_detect_db_dir() -> Optional[str]:
     return candidates[0]
 
 
-def _collect_db_files(db_dir: str) -> tuple[list, dict]:
+def _collect_db_files(db_dir: str) -> tuple[list[DbFile], SaltToDbs]:
     """Collect all .db files with their salts and page 1 data."""
-    db_files = []  # (rel_path, abs_path, size, salt_hex, page1_bytes)
-    salt_to_dbs = {}  # salt_hex -> [rel_path, ...]
+    db_files: list[DbFile] = []  # (rel_path, abs_path, size, salt_hex, page1_bytes)
+    salt_to_dbs: SaltToDbs = {}  # salt_hex -> [rel_path, ...]
 
     for root, dirs, files in os.walk(db_dir):
         dirs[:] = [d for d in dirs if d not in ("-journal",)]
@@ -218,7 +223,7 @@ def extract_key(
                     addr = base + m.start()
                     hex_len = len(hex_str)
 
-                    candidates = []
+                    candidates: list[tuple[str, str | None]] = []
                     if hex_len == 32:
                         candidates.append((hex_str, None))
                     elif hex_len == 64:
@@ -327,7 +332,7 @@ def extract_key(
     return key_map
 
 
-def _read_u32(memory_regions, starts, addr):
+def _read_u32(memory_regions: list[MemoryRegion], starts: list[int], addr: int) -> int | None:
     idx = bisect.bisect_right(starts, addr) - 1
     if idx < 0:
         return None
@@ -337,7 +342,12 @@ def _read_u32(memory_regions, starts, addr):
     return None
 
 
-def _valid_ptr(memory_regions, starts, addr, length=4):
+def _valid_ptr(
+    memory_regions: list[MemoryRegion],
+    starts: list[int],
+    addr: int,
+    length: int = 4,
+) -> bool:
     idx = bisect.bisect_right(starts, addr) - 1
     if idx < 0:
         return False

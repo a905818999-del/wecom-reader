@@ -5,13 +5,21 @@ Usage: python -m wecom_reader.web --db-dir E:/WXWork/1688851235369380/Data
 
 import json
 from datetime import datetime
+from typing import Optional
 
 from flask import Flask, Response, render_template_string, request, send_file
 
 from .reader import WeComReader
 
 app = Flask(__name__)
-reader: WeComReader = None
+reader: Optional[WeComReader] = None
+
+
+def _require_reader() -> WeComReader:
+    """Return the configured reader or fail clearly before the web app starts."""
+    if reader is None:
+        raise RuntimeError("reader is not initialized")
+    return reader
 
 
 def safe_jsonify(data):
@@ -33,6 +41,7 @@ def safe_jsonify(data):
         json.dumps(data, ensure_ascii=False, default=_default),
         mimetype="application/json",
     )
+
 
 HTML_TEMPLATE = r"""
 <!DOCTYPE html>
@@ -281,7 +290,7 @@ def index():
 def api_sessions():
     keyword = request.args.get("keyword")
     limit = int(request.args.get("limit", 200))
-    sessions = reader.list_sessions(limit=limit, keyword=keyword)
+    sessions = _require_reader().list_sessions(limit=limit, keyword=keyword)
     return safe_jsonify({"count": len(sessions), "sessions": sessions})
 
 
@@ -292,7 +301,7 @@ def api_messages():
         return safe_jsonify({"error": "session_id required"}), 400
     limit = int(request.args.get("limit", 50))
     offset = int(request.args.get("offset", 0))
-    messages = reader.get_messages(session_id, limit=limit, offset=offset)
+    messages = _require_reader().get_messages(session_id, limit=limit, offset=offset)
     return safe_jsonify({"count": len(messages), "messages": messages})
 
 
@@ -301,13 +310,17 @@ def api_search():
     keyword = request.args.get("q", "")
     session_id = request.args.get("session_id")
     limit = int(request.args.get("limit", 50))
-    results = reader.search_messages(keyword, conversation_id=session_id, limit=limit)
+    results = _require_reader().search_messages(
+        keyword,
+        conversation_id=session_id,
+        limit=limit,
+    )
     return safe_jsonify({"count": len(results), "results": results})
 
 
 @app.route("/api/image/<message_id>")
 def api_image(message_id):
-    resolved = reader.resolve_image(message_id)
+    resolved = _require_reader().resolve_image(message_id)
     if not resolved or not resolved.local_path.is_file():
         return Response("", status=404)
     return send_file(resolved.local_path, mimetype=resolved.mime)
@@ -317,7 +330,7 @@ def api_image(message_id):
 def api_refresh():
     """Re-decrypt databases to get latest data."""
     try:
-        result = reader.init(verbose=False)
+        result = _require_reader().init(verbose=False)
         return safe_jsonify(result)
     except Exception as e:
         return safe_jsonify({"success": False, "error": str(e)})
@@ -325,9 +338,12 @@ def api_refresh():
 
 def main():
     import argparse
+
     parser = argparse.ArgumentParser(description="WeCom chat web viewer")
     parser.add_argument("--db-dir", required=True, help="WeCom data directory")
-    parser.add_argument("--decrypted-dir", default="wxwork_decrypted", help="Decrypted DB directory")
+    parser.add_argument(
+        "--decrypted-dir", default="wxwork_decrypted", help="Decrypted DB directory"
+    )
     parser.add_argument("--port", type=int, default=8765, help="Web server port")
     parser.add_argument("--host", default="127.0.0.1", help="Bind address")
     args = parser.parse_args()

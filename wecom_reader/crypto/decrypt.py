@@ -50,7 +50,7 @@ def is_plain_sqlite(page: bytes) -> bool:
     return page[: len(SQLITE_HDR)] == SQLITE_HDR
 
 
-def has_wxsqlite3_plain_header_fragment(page: bytes) -> bool:
+def has_wxsqlite3_plain_header_fragment(page: bytes | bytearray) -> bool:
     """Check for wxSQLite3 AES mode: header bytes 16..23 kept in plaintext."""
     if len(page) < 24:
         return False
