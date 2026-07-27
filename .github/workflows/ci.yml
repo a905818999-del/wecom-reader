@@ -38,8 +38,11 @@ jobs:
 
       - name: Lint (ruff)
         run: |
-          ruff check wecom_reader tests
-          ruff format --check wecom_reader tests
+          ruff check wecom_reader tests scripts
+          ruff format --check wecom_reader tests scripts
+
+      - name: Typecheck (mypy)
+        run: mypy --check-untyped-defs wecom_reader scripts tests/test_audit_export.py tests/test_audit_contract_conformance.py
 
       - name: Test (pytest + coverage)
         env:
@@ -52,6 +55,9 @@ jobs:
             --cov-report=xml \
             --cov-report=term-missing
         continue-on-error: false
+
+      - name: Audit fixture privacy scan
+        run: python scripts/check_audit_privacy.py tests/fixtures/audit_contract_v1.jsonl
 
       - name: Upload coverage
         if: matrix.python-version == '3.12'
