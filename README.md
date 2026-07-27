@@ -58,6 +58,11 @@ python -m wecom_reader.cli \
 JSONL 行顺序固定为消息表顺序和各表 `rowid` 顺序；下游应使用稳定键与 `sequence`
 判断消息身份和时间顺序，不应依赖文件行号。
 
+MessageRecord v1 审计合同见 `docs/audit-contract-v1.md`。Reader 的
+`tests/fixtures/audit_contract_v1.jsonl` 是 WeCom2 权威 fixture 的字节级副本；
+CI 会校验 producer conformance、fixture SHA-256、source/parse_status 白名单和
+fixture 隐私扫描。
+
 ### Python 库
 
 ```python

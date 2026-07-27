@@ -34,6 +34,7 @@ AUDIT_FIELDS = (
     "parse_status",
 )
 AUDIT_SOURCES = {"db", "wal", "lookup", "index"}
+AUDIT_PARSE_STATUSES = {"OK", "UNSUPPORTED", "UNVERIFIABLE", "ERROR"}
 FULLY_PARSED_CONTENT_TYPES = {0, 2}
 SOURCE_MANIFEST_NAME = ".wecom-reader-audit-source.json"
 
@@ -51,6 +52,7 @@ class AuditExportSummary:
     duplicate_count: int
     parse_status_counts: dict[str, int]
     message_type_counts: dict[str, int]
+    contract_version: int = 1
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serializable summary."""
@@ -61,6 +63,18 @@ def stable_hash(value: str | bytes) -> str:
     """Return the WeCom audit contract's deterministic SHA-256 representation."""
     data = value if isinstance(value, bytes) else value.encode("utf-8")
     return f"sha256:{hashlib.sha256(data).hexdigest()}"
+
+
+def canonical_audit_record_json(record: Mapping[str, Any]) -> str:
+    """Serialize one MessageRecord v1 audit record in canonical JSONL form."""
+    payload = dict(record)
+    if tuple(payload) != AUDIT_FIELDS:
+        raise ValueError("audit record has an invalid field set or order")
+    if payload["source"] not in AUDIT_SOURCES:
+        raise ValueError("audit record has an unsupported source")
+    if payload["parse_status"] not in AUDIT_PARSE_STATUSES:
+        raise ValueError("audit record has an unsupported parse_status")
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
 def audit_record_from_message(
@@ -272,8 +286,7 @@ def write_audit_jsonl(
             temp_path = Path(handle.name)
             for record in records:
                 payload = dict(record)
-                if tuple(payload) != AUDIT_FIELDS:
-                    raise ValueError("audit record has an invalid field set or order")
+                canonical = canonical_audit_record_json(payload)
                 stable_key = json.dumps(
                     _stable_key(payload),
                     ensure_ascii=False,
@@ -285,15 +298,9 @@ def write_audit_jsonl(
                 )
                 if cursor.rowcount == 0:
                     duplicate_count += 1
-                parse_status_counts[str(payload["parse_status"])] += 1
+                parse_status_counts[payload["parse_status"]] += 1
                 message_type_counts[str(payload["message_type"])] += 1
-                handle.write(
-                    json.dumps(
-                        payload,
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                    )
-                )
+                handle.write(canonical)
                 handle.write("\n")
                 record_count += 1
             handle.flush()
