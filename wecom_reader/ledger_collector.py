@@ -85,6 +85,22 @@ def collect_message_db(
     )
 
 
+def iter_stable_message_records(db_path: str | os.PathLike[str]):
+    """Yield every supported message-table row from a stable read-only snapshot."""
+    path = Path(db_path)
+    _reject_nonempty_wal(path)
+    before_digest, before_stat = _stable_sha256(path)
+    tables, _observed_count, _max_sequence = _source_summary(path)
+    validation = {"completed": False}
+    yield from _iter_message_records(
+        path,
+        tables,
+        before_digest,
+        before_stat,
+        validation,
+    )
+
+
 def _reject_nonempty_wal(path: Path) -> None:
     wal_path = path.with_name(path.name + "-wal")
     try:

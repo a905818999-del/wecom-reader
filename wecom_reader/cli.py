@@ -4,6 +4,7 @@ All commands output JSON by default. Use --table for human-readable tables.
 """
 
 import json
+from pathlib import Path
 import sys
 from typing import Any
 
@@ -176,6 +177,36 @@ def export(ctx, session_id, fmt, output):
         _json_output({"success": True, "output": output, "count": len(messages)})
     else:
         click.echo(data)
+
+
+@main.command("export-audit")
+@click.option(
+    "--output",
+    "-o",
+    required=True,
+    type=click.Path(path_type=Path, dir_okay=False),
+    help="Privacy-safe JSONL output path",
+)
+@click.pass_context
+def export_audit(ctx, output):
+    """Export all decrypted messages as privacy-safe audit JSONL."""
+    from .export.audit import export_audit_jsonl, verify_audit_source_manifest
+
+    reader: WeComReader = ctx.obj["reader"]
+    db_path = Path(reader.decrypted_dir) / "message.db"
+    try:
+        account_id = verify_audit_source_manifest(reader.db_dir, reader.decrypted_dir)
+        summary = export_audit_jsonl(db_path, output, account_id)
+    except Exception as exc:
+        _json_output({"success": False, "error": type(exc).__name__})
+        raise click.exceptions.Exit(1) from None
+    _json_output(
+        {
+            "success": True,
+            "output": output.name,
+            **summary.to_dict(),
+        }
+    )
 
 
 if __name__ == "__main__":

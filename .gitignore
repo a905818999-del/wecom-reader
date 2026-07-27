@@ -26,6 +26,7 @@ Thumbs.db
 wxwork_decrypted/
 wxwork_keys.json
 config.json
+.wecom-reader-audit-source.json
 *.db
 *.db-wal
 *.db-shm
@@ -36,6 +37,7 @@ api_at_*.txt
 parse_output.txt
 
 # Test output
+output/
 .coverage
 coverage.xml
 htmlcov/
